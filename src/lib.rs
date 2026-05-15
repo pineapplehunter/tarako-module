@@ -646,6 +646,29 @@ fn generate_key_pair() -> Result<KeyPair> {
 }
 
 /* ------------------------------------------------------------------ */
+/* fs-verity check helper                                              */
+/* ------------------------------------------------------------------ */
+
+const S_VERITY: u32 = 1 << 16;
+
+fn current_exe_has_fsverity() -> bool {
+    let current = crate::current!();
+    let Some(mm) = current.mm() else {
+        return false;
+    };
+    let mm_ptr = mm.as_raw();
+    if mm_ptr.is_null() {
+        return false;
+    }
+    let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
+    if exe_file.is_null() {
+        return false;
+    }
+    let inode = unsafe { *(*exe_file).f_inode };
+    inode.i_flags as u32 & S_VERITY != 0
+}
+
+/* ------------------------------------------------------------------ */
 /* Module                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -703,6 +726,11 @@ impl MiscDevice for SignerDevice {
     }
 
     fn ioctl(_me: Pin<&SignerDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
+        if !current_exe_has_fsverity() {
+            pr_info!("Signer: rejected ioctl from non-fsverity binary\n");
+            return Err(EPERM);
+        }
+
         match cmd {
             SIGNER_HELLO => {
                 pr_info!("Signer: hello from ioctl\n");
