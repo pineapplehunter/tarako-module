@@ -31,7 +31,7 @@
             ];
           };
 
-          packages.default = kernel.stdenv.mkDerivation {
+          packages.kernel-module = kernel.stdenv.mkDerivation {
             pname = "hello-world-module";
             version = kernel.version;
 
@@ -54,6 +54,10 @@
               platforms = pkgs.lib.platforms.linux;
               broken = !kernel.withRust;
             };
+          };
+
+          packages.default = pkgs.callPackage ./app {
+            inherit (pkgs) rustPlatform;
           };
 
           devShells.default = pkgs.mkShell {
