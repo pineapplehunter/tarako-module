@@ -81,6 +81,15 @@ mod ecc {
         pub fn vli_is_zero(vli: *const u64, ndigits: c_uint) -> bool;
         pub fn get_random_bytes(buf: *mut u8, len: c_ulong);
         pub fn sha256(data: *const u8, len: c_ulong, out: *mut u8);
+        pub fn ima_measure_critical_data(
+            event_label: *const i8,
+            event_name: *const i8,
+            buf: *const u8,
+            buf_len: c_ulong,
+            hash: bool,
+            digest: *mut u8,
+            digest_len: c_ulong,
+        ) -> c_int;
     }
 
     pub fn p256_ndigits() -> u32 {
@@ -606,6 +615,25 @@ fn generate_key_pair() -> Result<KeyPair> {
     let mut pub_y = [0u64; P256_DIGITS];
     pub_x.copy_from_slice(&public[..P256_DIGITS]);
     pub_y.copy_from_slice(&public[P256_DIGITS..]);
+
+    let mut pubkey_bytes = [0u8; 65];
+    pubkey_bytes[0] = 0x04;
+    let x_bytes = digits_to_be_bytes(&pub_x);
+    let y_bytes = digits_to_be_bytes(&pub_y);
+    pubkey_bytes[1..33].copy_from_slice(&x_bytes);
+    pubkey_bytes[33..65].copy_from_slice(&y_bytes);
+
+    let _ima_ret = unsafe {
+        ecc::ima_measure_critical_data(
+            c"signer_key".as_ptr() as *const i8,
+            c"public".as_ptr() as *const i8,
+            pubkey_bytes.as_ptr(),
+            pubkey_bytes.len() as c_ulong,
+            true,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
 
     let cert = build_certificate(&private, &pub_x, &pub_y)?;
     let cert_len = cert.iter().position(|&b| b == 0).unwrap_or(cert.len());
