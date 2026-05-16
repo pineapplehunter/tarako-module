@@ -35,6 +35,7 @@
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
+              (python3.withPackages (ps: [ ps.cryptography ]))
               rustPlatform.bindgenHook
               (rust-bin.stable.latest.default.override {
                 extensions = [

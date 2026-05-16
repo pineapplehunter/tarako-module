@@ -1,16 +1,16 @@
-use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 
 const SIGNER_HELLO: libc::c_ulong = 0x0000_5300;
 const SIGNER_GET_CERT: libc::c_ulong = 0x8800_5301;
-const SIGNER_SIGN_DATA: libc::c_ulong = 0xC144_5302;
+const SIGNER_SIGN_DATA: libc::c_ulong = 0xC0C1_5302;
 
 #[repr(C)]
 struct SignDataReq {
-    data_len: u32,
-    data: [u8; 256],
+    nonce: [u8; 32],
+    hash: [u8; 32],
     sig_r: [u8; 32],
     sig_s: [u8; 32],
+    pubkey: [u8; 65],
 }
 
 fn hex(buf: &[u8]) -> String {
@@ -22,7 +22,7 @@ fn hex(buf: &[u8]) -> String {
 }
 
 fn main() {
-    let file = OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/signer")
@@ -42,22 +42,31 @@ fn main() {
     println!("ioctl return: {ret}");
     println!("certificate ({cert_len} bytes):");
     println!("  hex: {}", hex(&cert[..cert_len]));
+    if cert_len > 0 {
+        std::fs::write("/tmp/signer_cert.der", &cert[..cert_len]).ok();
+    }
     println!();
 
-    // 3. Sign data
+    // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
     println!("=== SIGNER_SIGN_DATA ===");
-    let msg = b"Hello, kernel!";
+    let nonce: [u8; 32] = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    ];
     let mut req = SignDataReq {
-        data_len: msg.len() as u32,
-        data: [0u8; 256],
+        nonce,
+        hash: [0u8; 32],
         sig_r: [0u8; 32],
         sig_s: [0u8; 32],
+        pubkey: [0u8; 65],
     };
-    req.data[..msg.len()].copy_from_slice(msg);
-
     let ret = unsafe { libc::ioctl(fd, SIGNER_SIGN_DATA, &mut req as *mut _ as *mut libc::c_void) };
     println!("ioctl return: {ret}");
-    println!("message: '{}'", String::from_utf8_lossy(msg));
-    println!("signature R: {}", hex(&req.sig_r));
-    println!("signature S: {}", hex(&req.sig_s));
+    println!("nonce: {}", hex(&req.nonce));
+    println!("hash: {}", hex(&req.hash));
+    println!("sig_r: {}", hex(&req.sig_r));
+    println!("sig_s: {}", hex(&req.sig_s));
+    println!("pubkey: {}", hex(&req.pubkey));
 }

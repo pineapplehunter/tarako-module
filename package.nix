@@ -4,7 +4,7 @@
   lib,
 }:
 stdenv.mkDerivation {
-  pname = "hello-world-module";
+  pname = "signer-module";
   version = kernel.version;
 
   src = lib.fileset.toSource {

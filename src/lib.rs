@@ -93,6 +93,12 @@ mod ecc {
             digest: *mut u8,
             digest_len: c_ulong,
         ) -> c_int;
+        pub fn fsverity_get_digest(
+            inode: *mut u8,
+            raw_digest: *mut u8,
+            alg: *mut u8,
+            halg: *mut u32,
+        ) -> c_int;
     }
 
     pub fn get_curve_n() -> Option<[u64; 4]> {
@@ -120,9 +126,38 @@ fn uncompressed_pubkey_bytes(pub_x: &[u64; 4], pub_y: &[u64; 4]) -> [u8; 65] {
 
 fn digits_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
     let mut out = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(digits.as_ptr() as *const u8, out.as_mut_ptr(), 32);
+    }
+    pr_info!(
+        "Signer: raw words {:016x}{:016x}{:016x}{:016x}\n",
+        digits[0], digits[1], digits[2], digits[3],
+    );
+    out
+}
+
+fn be_bytes_to_digits(bytes: &[u8; 32]) -> [u64; 4] {
+    let mut digits = [0u64; 4];
     for i in 0..4 {
-        let bytes = digits[3 - i].to_be_bytes();
-        out[i * 8..(i + 1) * 8].copy_from_slice(&bytes);
+        let mut word = [0u8; 8];
+        word.copy_from_slice(&bytes[i * 8..(i + 1) * 8]);
+        digits[3 - i] = u64::from_be_bytes(word);
+    }
+    digits
+}
+
+fn unswap_digits(swapped: &[u64; 4]) -> [u64; 4] {
+    let mut out = [0u64; 4];
+    for i in 0..4 {
+        out[i] = u64::from_be(swapped[3 - i]);
+    }
+    out
+}
+
+fn le_limbs_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for i in 0..4 {
+        out[i * 8..(i + 1) * 8].copy_from_slice(&digits[3 - i].to_be_bytes());
     }
     out
 }
@@ -310,10 +345,11 @@ const SIGNER_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
 
 #[repr(C)]
 struct SignDataReq {
-    data_len: u32,
-    data: [u8; 256],
+    nonce: [u8; 32],
+    hash: [u8; 32],
     sig_r: [u8; 32],
     sig_s: [u8; 32],
+    pubkey: [u8; 65],
 }
 
 // Arbitrary validity period for the self-signed cert (UTC, format YYMMDDHHMMSSZ)
@@ -328,6 +364,7 @@ const SUBJECT: &[u8] = b"signer";
 
 struct KeyPair {
     private: [u64; ecc::DIGITS as usize],
+    pubkey: [u8; 65],
     cert: [u8; 2048],
     cert_len: usize,
 }
@@ -361,8 +398,9 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             return Err(EINVAL);
         }
 
-        let mut r_digits = [0u64; 4];
-        r_digits.copy_from_slice(&pubk[..4]);
+        let mut r_swapped = [0u64; 4];
+        r_swapped.copy_from_slice(&pubk[..4]);
+        let mut r_digits = unswap_digits(&r_swapped);
         if unsafe { ecc::vli_cmp(r_digits.as_ptr(), curve_n.as_ptr(), ndigits) } >= 0 {
             let r_copy = r_digits;
             unsafe {
@@ -435,8 +473,8 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             continue;
         }
 
-        let sig_r_bytes = digits_to_be_bytes(&r_digits);
-        let sig_s_bytes = digits_to_be_bytes(&s_digits);
+        let sig_r_bytes = le_limbs_to_be_bytes(&r_digits);
+        let sig_s_bytes = le_limbs_to_be_bytes(&s_digits);
 
         return Ok((sig_r_bytes, sig_s_bytes));
     }
@@ -446,7 +484,7 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
 /* Self-signed X.509 certificate builder                               */
 /* ------------------------------------------------------------------ */
 
-fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> Result<[u8; 2048]> {
+fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> Result<([u8; 2048], usize)> {
     let pubkey_bytes = uncompressed_pubkey_bytes(pub_x, pub_y);
 
     let mut spki = DerBuf::new()?;
@@ -454,14 +492,9 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
         let mut algo = DerBuf::new()?;
         algo.oid(&OID_EC_PUBKEY);
         algo.oid(&OID_SECP256R1);
-        let mut algo_seq = DerBuf::new()?;
-        algo_seq.sequence(algo.as_slice());
 
-        let mut key = DerBuf::new()?;
-        key.bit_string(0, &pubkey_bytes);
-
-        spki.sequence(algo_seq.as_slice());
-        spki.sequence(key.as_slice());
+        spki.sequence(algo.as_slice());
+        spki.bit_string(0, &pubkey_bytes);
     }
     let spki_seq = {
         let mut s = DerBuf::new()?;
@@ -541,12 +574,17 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
     cert.bit_string(0, sig_seq.as_slice());
 
     let mut out = [0u8; 2048];
-    let len = cert.pos;
+    let cert_seq = {
+        let mut s = DerBuf::new()?;
+        s.sequence(cert.as_slice());
+        s
+    };
+    let len = cert_seq.pos;
     if len > 2048 {
         return Err(ENOSPC);
     }
-    out[..len].copy_from_slice(&cert.buf[..len]);
-    Ok(out)
+    out[..len].copy_from_slice(&cert_seq.buf[..len]);
+    Ok((out, len))
 }
 
 fn generate_key_pair() -> Result<KeyPair> {
@@ -574,6 +612,26 @@ fn generate_key_pair() -> Result<KeyPair> {
 
     let pubkey_bytes = uncompressed_pubkey_bytes(&pub_x, &pub_y);
 
+    if let Some(n) = ecc::get_curve_n() {
+        pr_info!("Signer: curve N words ({:016x}{:016x}{:016x}{:016x})\n",
+            n[0], n[1], n[2], n[3]);
+    }
+    pr_info!("Signer: pubkey X words ({:016x}{:016x}{:016x}{:016x})\n",
+        pub_x[0], pub_x[1], pub_x[2], pub_x[3]);
+    pr_info!("Signer: pubkey Y words ({:016x}{:016x}{:016x}{:016x})\n",
+        pub_y[0], pub_y[1], pub_y[2], pub_y[3]);
+    {
+        let mut hex = [0u8; 130];
+        for i in 0..65 {
+            let v = pubkey_bytes[i];
+            let hi = v >> 4;
+            let lo = v & 0xf;
+            hex[i * 2] = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+            hex[i * 2 + 1] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+        }
+        pr_info!("Signer: pubkey hex ({})\n", core::str::from_utf8(&hex).unwrap_or("???"));
+    }
+
     let _ima_ret = unsafe {
         ecc::ima_measure_critical_data(
             c"signer_key".as_ptr() as *const i8,
@@ -586,11 +644,11 @@ fn generate_key_pair() -> Result<KeyPair> {
         )
     };
 
-    let cert = build_certificate(&private, &pub_x, &pub_y)?;
-    let cert_len = cert.iter().position(|&b| b == 0).unwrap_or(cert.len());
+    let (cert, cert_len) = build_certificate(&private, &pub_x, &pub_y)?;
 
     Ok(KeyPair {
         private,
+        pubkey: pubkey_bytes,
         cert,
         cert_len,
     })
@@ -621,6 +679,29 @@ fn current_exe_has_fsverity() -> bool {
     let has_verity = inode.i_flags as u32 & S_VERITY != 0;
     drop(guard);
     has_verity
+}
+
+fn current_exe_fsverity_digest() -> Result<(usize, [u8; 64])> {
+    let current = crate::current!();
+    let mm = current.mm().ok_or(EPERM)?;
+    let mm_ptr = mm.as_raw();
+    if mm_ptr.is_null() {
+        return Err(EPERM);
+    }
+    let _guard = rcu::read_lock();
+    let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
+    if exe_file.is_null() {
+        return Err(EPERM);
+    }
+    let inode = unsafe { (*exe_file).f_inode as *mut u8 };
+    let mut digest = [0u8; 64];
+    let ret = unsafe {
+        ecc::fsverity_get_digest(inode, digest.as_mut_ptr(), core::ptr::null_mut(), core::ptr::null_mut())
+    };
+    if ret <= 0 {
+        return Err(EPERM);
+    }
+    Ok((ret as usize, digest))
 }
 
 /* ------------------------------------------------------------------ */
@@ -708,10 +789,11 @@ impl MiscDevice for SignerDevice {
                 let mut reader = UserSlice::new(ptr, buf_size).reader();
 
                 let mut req = SignDataReq {
-                    data_len: 0,
-                    data: [0u8; 256],
+                    nonce: [0u8; 32],
+                    hash: [0u8; 32],
                     sig_r: [0u8; 32],
                     sig_s: [0u8; 32],
+                    pubkey: [0u8; 65],
                 };
                 {
                     let req_ptr = &mut req as *mut SignDataReq as *mut u8;
@@ -724,16 +806,24 @@ impl MiscDevice for SignerDevice {
                     reader.read_slice(req_slice)?;
                 }
 
-                if req.data_len > 256 {
-                    return Err(EINVAL);
+                let (digest_len, fsverity_digest) = current_exe_fsverity_digest()?;
+
+                let to_sign_len = digest_len + 32;
+                let mut to_sign = [0u8; 96];
+                to_sign[..digest_len].copy_from_slice(&fsverity_digest[..digest_len]);
+                to_sign[digest_len..to_sign_len].copy_from_slice(&req.nonce);
+
+                unsafe {
+                    ecc::sha256(to_sign.as_ptr(), to_sign_len as c_ulong, req.hash.as_mut_ptr());
                 }
 
                 let guard = KEY_PAIR.lock();
                 let kp = guard.as_ref().ok_or(ENXIO)?;
-
-                let (sig_r, sig_s) = ecdsa_sign(&req.data[..req.data_len as usize], &kp.private)?;
-                req.sig_r = sig_r;
-                req.sig_s = sig_s;
+                let (sig_r, sig_s) = ecdsa_sign(&to_sign[..to_sign_len], &kp.private)?;
+                req.sig_r.copy_from_slice(&sig_r);
+                req.sig_s.copy_from_slice(&sig_s);
+                req.pubkey.copy_from_slice(&kp.pubkey);
+                drop(guard);
 
                 let mut writer = UserSlice::new(ptr, buf_size).writer();
                 let req_ptr = &req as *const SignDataReq as *const u8;
@@ -742,7 +832,7 @@ impl MiscDevice for SignerDevice {
                 };
                 writer.write_slice(req_slice)?;
 
-                pr_info!("Signer: signed data ({} bytes)\n", req.data_len);
+                pr_info!("Signer: computed signature\n");
                 Ok(0)
             }
             _ => {
