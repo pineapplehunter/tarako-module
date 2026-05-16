@@ -67,7 +67,7 @@ The integration test creates two VMs:
    - Computes `SHA256(digest || nonce)`.
    - Signs the result with ECDSA P-256 using `ecc_gen_privkey`, `ecc_make_pub_key`, `vli_mod_inv`, and `vli_mod_mult_slow`.
 
-The internal limb format of the kernel's ECC helpers is LE-limb (native u64 on x86_64), but `ecc_make_pub_key` applies `ecc_swap_digits` to its output, producing a big-endian memory image. The module handles this conversion via `unswap_digits` and `le_limbs_to_be_bytes`.
+The internal limb format of the kernel's ECC helpers is LE-limb (native u64 on x86_64), but `ecc_make_pub_key` applies `ecc_swap_digits` to its output, producing a big-endian memory image. The module handles vli conversion via `unswap_digits`. Byte-order conversion for the ioctl response (`sig_r`/`sig_s`) is done in **userspace** — the kernel returns raw LE-limb bytes and the app converts to big-endian hex for display.
 
 ## Key files
 

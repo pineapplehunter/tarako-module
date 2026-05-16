@@ -147,7 +147,9 @@ else:
     print("Hash MISMATCH!")
     raise Exception("Hash mismatch")
 
-# Verify ECDSA signature using the returned public key
+# Verify ECDSA signature using the returned public key.
+# The signer-app already converts raw kernel bytes to big-endian hex,
+# so parse directly as a big-endian integer.
 sig_r_line = next(line for line in out.split("\n") if line.startswith("sig_r:"))
 sig_s_line = next(line for line in out.split("\n") if line.startswith("sig_s:"))
 sig_r_hex = sig_r_line[6:].strip()

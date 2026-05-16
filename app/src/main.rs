@@ -33,6 +33,19 @@ fn hex(buf: &[u8]) -> String {
     s
 }
 
+// The kernel returns signature r, s as raw LE-limb u64 bytes.
+// Convert to big-endian hex for human-readable display.
+fn le_limbs_to_be_hex(raw: &[u8; 32]) -> String {
+    let mut be = [0u8; 32];
+    for i in 0..4 {
+        let limb = u64::from_le_bytes(
+            raw[(3 - i) * 8..(4 - i) * 8].try_into().unwrap(),
+        );
+        be[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_be_bytes());
+    }
+    hex(&be)
+}
+
 fn parse_hex_nonce(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 {
         return None;
@@ -97,7 +110,8 @@ fn main() {
     println!("ioctl return: {ret}");
     println!("nonce: {}", hex(&req.nonce));
     println!("hash: {}", hex(&req.hash));
-    println!("sig_r: {}", hex(&req.sig_r));
-    println!("sig_s: {}", hex(&req.sig_s));
+    // Kernel returns raw LE-limb bytes; convert to big-endian hex for display
+    println!("sig_r: {}", le_limbs_to_be_hex(&req.sig_r));
+    println!("sig_s: {}", le_limbs_to_be_hex(&req.sig_s));
     println!("pubkey: {}", hex(&req.pubkey));
 }
