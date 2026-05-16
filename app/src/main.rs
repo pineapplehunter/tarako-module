@@ -21,7 +21,34 @@ fn hex(buf: &[u8]) -> String {
     s
 }
 
+fn parse_hex_nonce(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    let nonce: [u8; 32] = if args.len() > 1 {
+        parse_hex_nonce(&args[1]).unwrap_or_else(|| {
+            eprintln!("usage: {} [64-hex-nonce]", args[0]);
+            std::process::exit(1);
+        })
+    } else {
+        [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+        ]
+    };
+
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -42,19 +69,10 @@ fn main() {
     println!("ioctl return: {ret}");
     println!("certificate ({cert_len} bytes):");
     println!("  hex: {}", hex(&cert[..cert_len]));
-    if cert_len > 0 {
-        std::fs::write("/tmp/signer_cert.der", &cert[..cert_len]).ok();
-    }
     println!();
 
     // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
     println!("=== SIGNER_SIGN_DATA ===");
-    let nonce: [u8; 32] = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
-    ];
     let mut req = SignDataReq {
         nonce,
         hash: [0u8; 32],
