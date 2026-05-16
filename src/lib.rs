@@ -11,7 +11,7 @@ use kernel::{
     ioctl::{_IO, _IOC_SIZE, _IOR, _IOWR},
     miscdevice::{MiscDevice, MiscDeviceOptions, MiscDeviceRegistration},
     prelude::*,
-    sync::aref::ARef,
+    sync::{aref::ARef, rcu},
     uaccess::{UserPtr, UserSlice},
 };
 
@@ -41,7 +41,9 @@ mod ecc {
         pub b: *mut u64,
     }
 
+    // From include/crypto/ecdh.h: ECC_CURVE_NIST_P256 = 0x0002
     const P256: u32 = 0x0002;
+    // From include/crypto/internal/ecc.h: ECC_CURVE_NIST_P256_DIGITS = 4
     const DIGITS: u32 = 4;
 
     extern "C" {
@@ -91,8 +93,6 @@ mod ecc {
             digest: *mut u8,
             digest_len: c_ulong,
         ) -> c_int;
-        pub fn __rcu_read_lock();
-        pub fn __rcu_read_unlock();
     }
 
     pub fn p256_ndigits() -> u32 {
@@ -208,6 +208,19 @@ impl DerBuf {
         self.extend(data);
     }
 
+    fn integer_bytes(&mut self, val: &[u8]) {
+        let start = val.iter().position(|&b| b != 0).unwrap_or(0);
+        let data = &val[start..];
+        self.push(0x02);
+        if data.is_empty() || data[0] & 0x80 != 0 {
+            self.encode_length(data.len() + 1);
+            self.push(0x00);
+        } else {
+            self.encode_length(data.len());
+        }
+        self.extend(data);
+    }
+
     fn oid(&mut self, oid: &[u32]) {
         let mut enc = [0u8; 64];
         let mut epos = 0usize;
@@ -278,13 +291,20 @@ module! {
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
+// NIST P-256 uses 4 × u64; `DIGITS` in mod ecc is the same value from
+// the kernel's `ECC_CURVE_NIST_P256_DIGITS` (include/crypto/internal/ecc.h).
 const P256_DIGITS: usize = 4;
 
+// OID 1.2.840.10045.2.1 — id-ecPublicKey (ANSI X9.62, RFC 5480 sec 2.1.1)
 const OID_EC_PUBKEY: [u32; 6] = [1, 2, 840, 10045, 2, 1];
+// OID 1.2.840.10045.3.1.7 — secp256r1 / prime256v1 (ANSI X9.62, SEC 2)
 const OID_SECP256R1: [u32; 7] = [1, 2, 840, 10045, 3, 1, 7];
+// OID 1.2.840.10045.4.3.2 — ecdsa-with-SHA256 (ANSI X9.62, RFC 5758)
 const OID_ECDSA_WITH_SHA256: [u32; 7] = [1, 2, 840, 10045, 4, 3, 2];
+// OID 2.5.4.3 — commonName (ITU-T X.520 / RFC 4519 sec 2.3)
 const OID_CN: [u32; 4] = [2, 5, 4, 3];
 
+// ioctl command numbers: type 'S' (0x53), sequence 0..2
 const SIGNER_HELLO: u32 = _IO('S' as u32, 0x00);
 const SIGNER_GET_CERT: u32 = _IOR::<[u8; 2048]>('S' as u32, 0x01);
 const SIGNER_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
@@ -297,8 +317,10 @@ struct SignDataReq {
     sig_s: [u8; 32],
 }
 
+// Arbitrary validity period for the self-signed cert (UTC, format YYMMDDHHMMSSZ)
 const CURR_TIME: &[u8] = b"250101000000Z";
 const EXPIRE_TIME: &[u8] = b"350101000000Z";
+// X.509 subject commonName
 const SUBJECT: &[u8] = b"signer";
 
 /* ------------------------------------------------------------------ */
@@ -316,70 +338,14 @@ kernel::sync::global_lock! {
 }
 
 /* ------------------------------------------------------------------ */
-/* SHA-256 helper                                                      */
-/* ------------------------------------------------------------------ */
-
-fn sha256_digest(data: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    unsafe { ecc::sha256(data.as_ptr(), data.len() as c_ulong, out.as_mut_ptr()) };
-    out
-}
-
-/* ------------------------------------------------------------------ */
-/* Big integer helpers for u64[4] (P-256)                              */
-/* ------------------------------------------------------------------ */
-
-fn cmp_u64(a: &[u64; 4], b: &[u64; 4]) -> i32 {
-    for i in (0..4).rev() {
-        if a[i] > b[i] {
-            return 1;
-        }
-        if a[i] < b[i] {
-            return -1;
-        }
-    }
-    0
-}
-
-fn u64_sub(r: &mut [u64; 4], a: &[u64; 4], b: &[u64; 4]) -> u64 {
-    let mut borrow = 0u64;
-    for i in 0..4 {
-        let (d, b1) = a[i].overflowing_sub(b[i]);
-        let (d, b2) = d.overflowing_sub(borrow);
-        r[i] = d;
-        borrow = (b1 as u64) + (b2 as u64);
-    }
-    borrow
-}
-
-fn mod_sub_n(r: &mut [u64; 4], n: &[u64; 4]) {
-    let tmp = *r;
-    u64_sub(r, &tmp, n);
-}
-
-fn mod_add_n(a: &[u64; 4], b: &[u64; 4], n: &[u64; 4]) -> [u64; 4] {
-    let mut r = *a;
-    let mut carry = 0u64;
-    for i in 0..4 {
-        let (s, c1) = r[i].overflowing_add(b[i]);
-        let (s, c2) = s.overflowing_add(carry);
-        r[i] = s;
-        carry = (c1 as u64) + (c2 as u64);
-    }
-    if carry != 0 || cmp_u64(&r, n) >= 0 {
-        mod_sub_n(&mut r, n);
-    }
-    r
-}
-
-/* ------------------------------------------------------------------ */
 /* ECDSA operations                                                    */
 /* ------------------------------------------------------------------ */
 
 fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
     let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
     let ndigits = ecc::p256_ndigits();
-    let data_hash = sha256_digest(data);
+    let mut data_hash = [0u8; 32];
+    unsafe { ecc::sha256(data.as_ptr(), data.len() as c_ulong, data_hash.as_mut_ptr()) };
 
     loop {
         let mut k = [0u64; 4];
@@ -398,8 +364,7 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
 
         let mut r_digits = [0u64; 4];
         r_digits.copy_from_slice(&pubk[..4]);
-        let r_gt_n = cmp_u64(&r_digits, &curve_n) >= 0;
-        if r_gt_n {
+        if unsafe { ecc::vli_cmp(r_digits.as_ptr(), curve_n.as_ptr(), ndigits) } >= 0 {
             let r_copy = r_digits;
             unsafe {
                 ecc::vli_sub(
@@ -431,7 +396,26 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             ecc::ecc_digits_from_bytes(data_hash.as_ptr(), 32, z.as_mut_ptr(), ndigits);
         }
 
-        let z_plus_rs = mod_add_n(&z, &s_digits, &curve_n);
+        let mut z_plus_rs = z;
+        let mut carry = 0u64;
+        for i in 0..4 {
+            let (s, c1) = z_plus_rs[i].overflowing_add(s_digits[i]);
+            let (s, c2) = s.overflowing_add(carry);
+            z_plus_rs[i] = s;
+            carry = (c1 as u64) + (c2 as u64);
+        }
+        if carry != 0 || unsafe { ecc::vli_cmp(z_plus_rs.as_ptr(), curve_n.as_ptr(), ndigits) } >= 0
+        {
+            let tmp = z_plus_rs;
+            unsafe {
+                ecc::vli_sub(
+                    z_plus_rs.as_mut_ptr(),
+                    tmp.as_ptr(),
+                    curve_n.as_ptr(),
+                    ndigits,
+                );
+            }
+        }
 
         let mut k_inv = [0u64; 4];
         unsafe {
@@ -462,25 +446,6 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
 /* ------------------------------------------------------------------ */
 /* Self-signed X.509 certificate builder                               */
 /* ------------------------------------------------------------------ */
-
-fn encode_integer_val(buf: &mut DerBuf, val: &[u8; 32]) {
-    let mut start = 0usize;
-    while start < 32 && val[start] == 0 {
-        start += 1;
-    }
-    let data = &val[start..];
-    let extra_byte = if data.is_empty() || data[0] & 0x80 != 0 {
-        1
-    } else {
-        0
-    };
-    buf.push(0x02);
-    buf.encode_length(data.len() + extra_byte);
-    if extra_byte > 0 {
-        buf.push(0x00);
-    }
-    buf.extend(data);
-}
 
 fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> Result<[u8; 2048]> {
     let mut pubkey_bytes = [0u8; 65];
@@ -568,8 +533,8 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
     let (sig_r, sig_s) = ecdsa_sign(tbs_bytes, privkey)?;
 
     let mut sig_der = DerBuf::new()?;
-    encode_integer_val(&mut sig_der, &sig_r);
-    encode_integer_val(&mut sig_der, &sig_s);
+    sig_der.integer_bytes(&sig_r);
+    sig_der.integer_bytes(&sig_s);
     let sig_seq = {
         let mut s = DerBuf::new()?;
         s.sequence(sig_der.as_slice());
@@ -655,6 +620,7 @@ fn generate_key_pair() -> Result<KeyPair> {
 /* fs-verity check helper                                              */
 /* ------------------------------------------------------------------ */
 
+// From include/uapi/linux/fs.h: FS_VERITY_FL = 0x00100000
 const S_VERITY: u32 = 1 << 16;
 
 fn current_exe_has_fsverity() -> bool {
@@ -666,15 +632,14 @@ fn current_exe_has_fsverity() -> bool {
     if mm_ptr.is_null() {
         return false;
     }
-    unsafe { ecc::__rcu_read_lock() };
+    let guard = rcu::read_lock();
     let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
     if exe_file.is_null() {
-        unsafe { ecc::__rcu_read_unlock() };
         return false;
     }
     let inode = unsafe { *(*exe_file).f_inode };
     let has_verity = inode.i_flags as u32 & S_VERITY != 0;
-    unsafe { ecc::__rcu_read_unlock() };
+    drop(guard);
     has_verity
 }
 
