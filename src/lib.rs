@@ -5,6 +5,7 @@
 
 use core::ffi::c_ulong;
 use kernel::{
+    alloc::{flags::GFP_KERNEL, KBox},
     device::Device,
     fs::File,
     ioctl::{_IO, _IOC_SIZE, _IOR, _IOWR},
@@ -90,6 +91,8 @@ mod ecc {
             digest: *mut u8,
             digest_len: c_ulong,
         ) -> c_int;
+        pub fn __rcu_read_lock();
+        pub fn __rcu_read_unlock();
     }
 
     pub fn p256_ndigits() -> u32 {
@@ -126,16 +129,14 @@ fn digits_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
 /* ------------------------------------------------------------------ */
 
 struct DerBuf {
-    buf: [u8; 4096],
+    buf: KBox<[u8; 2048]>,
     pos: usize,
 }
 
 impl DerBuf {
-    fn new() -> Self {
-        DerBuf {
-            buf: [0u8; 4096],
-            pos: 0,
-        }
+    fn new() -> Result<Self> {
+        let buf = KBox::new([0u8; 2048], GFP_KERNEL).map_err(|_| ENOMEM)?;
+        Ok(DerBuf { buf, pos: 0 })
     }
 
     fn as_slice(&self) -> &[u8] {
@@ -432,11 +433,16 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
 
         let z_plus_rs = mod_add_n(&z, &s_digits, &curve_n);
 
+        let mut k_inv = [0u64; 4];
+        unsafe {
+            ecc::vli_mod_inv(k_inv.as_mut_ptr(), k.as_ptr(), curve_n.as_ptr(), ndigits);
+        }
+
         unsafe {
             ecc::vli_mod_mult_slow(
                 s_digits.as_mut_ptr(),
                 z_plus_rs.as_ptr(),
-                k.as_ptr(),
+                k_inv.as_ptr(),
                 curve_n.as_ptr(),
                 ndigits,
             );
@@ -484,61 +490,61 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
     pubkey_bytes[1..33].copy_from_slice(&x_bytes);
     pubkey_bytes[33..65].copy_from_slice(&y_bytes);
 
-    let mut spki = DerBuf::new();
+    let mut spki = DerBuf::new()?;
     {
-        let mut algo = DerBuf::new();
+        let mut algo = DerBuf::new()?;
         algo.oid(&OID_EC_PUBKEY);
         algo.oid(&OID_SECP256R1);
-        let mut algo_seq = DerBuf::new();
+        let mut algo_seq = DerBuf::new()?;
         algo_seq.sequence(algo.as_slice());
 
-        let mut key = DerBuf::new();
+        let mut key = DerBuf::new()?;
         key.bit_string(0, &pubkey_bytes);
 
         spki.sequence(algo_seq.as_slice());
         spki.sequence(key.as_slice());
     }
     let spki_seq = {
-        let mut s = DerBuf::new();
+        let mut s = DerBuf::new()?;
         s.sequence(spki.as_slice());
         s
     };
 
-    let mut sig_algo = DerBuf::new();
+    let mut sig_algo = DerBuf::new()?;
     sig_algo.oid(&OID_ECDSA_WITH_SHA256);
     let sig_algo_seq = {
-        let mut s = DerBuf::new();
+        let mut s = DerBuf::new()?;
         s.sequence(sig_algo.as_slice());
         s
     };
 
-    let mut validity = DerBuf::new();
+    let mut validity = DerBuf::new()?;
     validity.utctime(CURR_TIME);
     validity.utctime(EXPIRE_TIME);
     let validity_seq = {
-        let mut s = DerBuf::new();
+        let mut s = DerBuf::new()?;
         s.sequence(validity.as_slice());
         s
     };
 
-    let mut name = DerBuf::new();
+    let mut name = DerBuf::new()?;
     {
-        let mut attr = DerBuf::new();
+        let mut attr = DerBuf::new()?;
         attr.oid(&OID_CN);
         attr.utf8_string(SUBJECT);
-        let mut attr_seq = DerBuf::new();
+        let mut attr_seq = DerBuf::new()?;
         attr_seq.sequence(attr.as_slice());
-        let mut set = DerBuf::new();
+        let mut set = DerBuf::new()?;
         set.set(attr_seq.as_slice());
         name.sequence(set.as_slice());
     }
 
-    let mut version = DerBuf::new();
+    let mut version = DerBuf::new()?;
     version.integer(2);
-    let mut version_tagged = DerBuf::new();
+    let mut version_tagged = DerBuf::new()?;
     version_tagged.tagged_explicit(0, version.as_slice());
 
-    let mut tbs = DerBuf::new();
+    let mut tbs = DerBuf::new()?;
     tbs.extend(version_tagged.as_slice());
     tbs.integer(1);
     tbs.extend(sig_algo_seq.as_slice());
@@ -548,7 +554,7 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
     tbs.extend(spki_seq.as_slice());
 
     let tbs_cert = {
-        let mut s = DerBuf::new();
+        let mut s = DerBuf::new()?;
         s.sequence(tbs.as_slice());
         let mut out = [0u8; 2048];
         let len = s.pos;
@@ -561,16 +567,16 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
     let tbs_bytes = &tbs_cert.0[..tbs_cert.1];
     let (sig_r, sig_s) = ecdsa_sign(tbs_bytes, privkey)?;
 
-    let mut sig_der = DerBuf::new();
+    let mut sig_der = DerBuf::new()?;
     encode_integer_val(&mut sig_der, &sig_r);
     encode_integer_val(&mut sig_der, &sig_s);
     let sig_seq = {
-        let mut s = DerBuf::new();
+        let mut s = DerBuf::new()?;
         s.sequence(sig_der.as_slice());
         s
     };
 
-    let mut cert = DerBuf::new();
+    let mut cert = DerBuf::new()?;
     cert.extend(tbs_bytes);
     cert.extend(sig_algo_seq.as_slice());
     cert.bit_string(0, sig_seq.as_slice());
@@ -660,12 +666,16 @@ fn current_exe_has_fsverity() -> bool {
     if mm_ptr.is_null() {
         return false;
     }
+    unsafe { ecc::__rcu_read_lock() };
     let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
     if exe_file.is_null() {
+        unsafe { ecc::__rcu_read_unlock() };
         return false;
     }
     let inode = unsafe { *(*exe_file).f_inode };
-    inode.i_flags as u32 & S_VERITY != 0
+    let has_verity = inode.i_flags as u32 & S_VERITY != 0;
+    unsafe { ecc::__rcu_read_unlock() };
+    has_verity
 }
 
 /* ------------------------------------------------------------------ */
