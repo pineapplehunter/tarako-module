@@ -19,10 +19,6 @@
 
       perSystem =
         { pkgs, system, ... }:
-        let
-          linuxPkgs = pkgs.linuxKernel.packageAliases.linux_latest;
-          kernel = linuxPkgs.kernel;
-        in
         {
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
@@ -31,34 +27,11 @@
             ];
           };
 
-          packages.kernel-module = kernel.stdenv.mkDerivation {
-            pname = "hello-world-module";
-            version = kernel.version;
+          packages.kernel-module = pkgs.linuxPackages_latest.callPackage ./package.nix { };
 
-            src = ./.;
+          packages.default = pkgs.callPackage ./app/package.nix { };
 
-            nativeBuildInputs = kernel.moduleBuildDependencies;
-
-            makeFlags = linuxPkgs.kernelModuleMakeFlags ++ [
-              "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-            ];
-
-            installFlags = [ "INSTALL_MOD_PATH=${placeholder "out"}" ];
-            installTargets = [ "modules_install" ];
-
-            enableParallelBuilding = true;
-
-            meta = {
-              description = "A simple Hello World Rust kernel module";
-              license = pkgs.lib.licenses.gpl2Only;
-              platforms = pkgs.lib.platforms.linux;
-              broken = !kernel.withRust;
-            };
-          };
-
-          packages.default = pkgs.callPackage ./app {
-            inherit (pkgs) rustPlatform;
-          };
+          checks.nixos-test = pkgs.callPackage ./test.nix { };
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
@@ -70,7 +43,7 @@
                 ];
                 targets = [ ];
               })
-            ] ++ kernel.moduleBuildDependencies;
+            ];
           };
 
           formatter = pkgs.nixfmt-tree;
