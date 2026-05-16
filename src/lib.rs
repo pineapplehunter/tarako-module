@@ -1,7 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! A kernel module that creates an ECDSA P-256 key pair on load, generates a
-//! self-signed X.509 certificate, and exposes it via a miscdevice with ioctls.
+//! A kernel module for remote attestation using ECDSA P-256 signatures.
+//!
+//! # Security model
+//!
+//! The kernel is the only trusted entity. On load it generates an ECDSA P-256
+//! key pair and a self-signed X.509 certificate, then exposes them through
+//! `/dev/signer` via three ioctls:
+//!
+//! 1. `SIGNER_HELLO` (0x0000_5300) — sanity check.
+//! 2. `SIGNER_GET_CERT` (0x8800_5301) — return the self-signed certificate.
+//! 3. `SIGNER_SIGN_DATA` (0xC0C1_5302) — remote attestation: read the calling
+//!    process's fs-verity digest, compute `ECDSA-SHA256(sk, SHA256(digest || nonce))`,
+//!    and return the signature together with the public key.
+//!
+//! The ioctl handler rejects callers whose executable is NOT protected by
+//! fs-verity, ensuring the measured code path cannot be tampered with.
+//!
+//! # Internal limb format
+//!
+//! The kernel's ECC helpers (`ecc_*`, `vli_*`) store 256-bit numbers as 4 x
+//! `u64` in native little-endian limb order (= LE-limb).  However,
+//! `ecc_make_pub_key` calls `ecc_swap_digits` on its output, which reverses
+//! limb order AND byte-swaps each limb (= big-endian memory image on x86_64).
+//! Conversion helpers bridge between the two formats as needed.
 
 use core::ffi::c_ulong;
 use kernel::{
@@ -17,6 +39,10 @@ use kernel::{
 
 /* ------------------------------------------------------------------ */
 /* FFI declarations                                                    */
+/*                                                                     */
+/* These call into kernel-internal crypto helpers.                     */
+/* All vli / ecc functions use LE-limb format (native u64 on x86_64)   */
+/* EXCEPT ecc_make_pub_key, which applies ecc_swap_digits on output.   */
 /* ------------------------------------------------------------------ */
 
 #[allow(dead_code, unreachable_pub)]
@@ -47,7 +73,9 @@ mod ecc {
     pub const DIGITS: u32 = 4;
 
     extern "C" {
+        // LE-limb input, LE-limb output
         pub fn ecc_gen_privkey(curve_id: c_uint, ndigits: c_uint, key: *mut u64) -> c_int;
+        // LE-limb input, SWAPPED output (ecc_swap_digits applied internally)
         pub fn ecc_make_pub_key(
             curve_id: c_uint,
             ndigits: c_uint,
@@ -55,12 +83,14 @@ mod ecc {
             pubkey: *mut u64,
         ) -> c_int;
         pub fn ecc_get_curve(curve_id: c_uint) -> *const Curve;
+        // Big-endian bytes → LE-limb
         pub fn ecc_digits_from_bytes(
             inp: *const u8,
             nbytes: c_uint,
             out: *mut u64,
             ndigits: c_uint,
         );
+        // All vli functions expect LE-limb
         pub fn vli_mod_inv(
             result: *mut u64,
             input: *const u64,
@@ -114,6 +144,8 @@ mod ecc {
     }
 }
 
+// Assemble a 65-byte uncompressed EC point (0x04 || X || Y) from
+// the swapped-format coordinates output by ecc_make_pub_key.
 fn uncompressed_pubkey_bytes(pub_x: &[u64; 4], pub_y: &[u64; 4]) -> [u8; 65] {
     let mut out = [0u8; 65];
     out[0] = 0x04;
@@ -124,6 +156,9 @@ fn uncompressed_pubkey_bytes(pub_x: &[u64; 4], pub_y: &[u64; 4]) -> [u8; 65] {
     out
 }
 
+// Convert swapped-format u64 limbs (output of ecc_make_pub_key) to
+// big-endian bytes by raw-memcpy.  On x86_64 the ecc_swap_digits output
+// already arranges the limbs in big-endian memory order.
 fn digits_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
     let mut out = [0u8; 32];
     unsafe {
@@ -136,6 +171,7 @@ fn digits_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
     out
 }
 
+// Convert big-endian bytes to LE-limb u64 (inverse of le_limbs_to_be_bytes).
 fn be_bytes_to_digits(bytes: &[u8; 32]) -> [u64; 4] {
     let mut digits = [0u64; 4];
     for i in 0..4 {
@@ -146,6 +182,8 @@ fn be_bytes_to_digits(bytes: &[u8; 32]) -> [u64; 4] {
     digits
 }
 
+// Reverse ecc_swap_digits: convert swapped format back to LE-limb.
+// This is its own inverse, so unswap(unswap(x)) == x.
 fn unswap_digits(swapped: &[u64; 4]) -> [u64; 4] {
     let mut out = [0u64; 4];
     for i in 0..4 {
@@ -154,6 +192,8 @@ fn unswap_digits(swapped: &[u64; 4]) -> [u64; 4] {
     out
 }
 
+// Convert LE-limb u64 to big-endian bytes (for DER signature encoding).
+// Used for r, s output from ecdsa_sign where all arithmetic is in LE-limb.
 fn le_limbs_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
     let mut out = [0u8; 32];
     for i in 0..4 {
@@ -377,19 +417,27 @@ kernel::sync::global_lock! {
 /* ECDSA operations                                                    */
 /* ------------------------------------------------------------------ */
 
+// Deterministic-ish ECDSA signing: s = k^(-1) * (z + r * sk) mod n.
+// Implements RFC 6979-style loop: retry if r == 0 or s == 0.
+//
+// All vli arithmetic expects LE-limb format.  pubk from ecc_make_pub_key
+// is in swapped format, so we unswap it before use.
 fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
     let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
     let ndigits = ecc::DIGITS;
+    // Hash the input data (SHA256)
     let mut data_hash = [0u8; 32];
     unsafe { ecc::sha256(data.as_ptr(), data.len() as c_ulong, data_hash.as_mut_ptr()) };
 
     loop {
+        // Pick random nonce k
         let mut k = [0u64; 4];
         let ret = unsafe { ecc::ecc_gen_privkey(ecc::P256, ndigits, k.as_mut_ptr()) };
         if ret < 0 {
             return Err(EINVAL);
         }
 
+        // Compute R = k*G; r = X(R) mod n
         let mut pubk = [0u64; 8];
         let ret = unsafe {
             ecc::ecc_make_pub_key(ecc::P256, ndigits, k.as_ptr(), pubk.as_mut_ptr())
@@ -398,6 +446,7 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             return Err(EINVAL);
         }
 
+        // pubk is swapped; unswap to LE-limb for vli
         let mut r_swapped = [0u64; 4];
         r_swapped.copy_from_slice(&pubk[..4]);
         let mut r_digits = unswap_digits(&r_swapped);
@@ -417,6 +466,7 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             continue;
         }
 
+        // Compute s = r * sk mod n
         let mut s_digits = [0u64; 4];
         unsafe {
             ecc::vli_mod_mult_slow(
@@ -428,11 +478,13 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             );
         }
 
+        // Hash-to-int: convert hash to LE-limb z
         let mut z = [0u64; 4];
         unsafe {
             ecc::ecc_digits_from_bytes(data_hash.as_ptr(), 32, z.as_mut_ptr(), ndigits);
         }
 
+        // z_plus_rs = z + r*sk mod n  (add with carry, reduce mod n if needed)
         let mut z_plus_rs = z;
         let mut carry = 0u64;
         for i in 0..4 {
@@ -454,11 +506,13 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             }
         }
 
+        // k_inv = k^(-1) mod n
         let mut k_inv = [0u64; 4];
         unsafe {
             ecc::vli_mod_inv(k_inv.as_mut_ptr(), k.as_ptr(), curve_n.as_ptr(), ndigits);
         }
 
+        // s = k_inv * (z + r*sk) mod n
         unsafe {
             ecc::vli_mod_mult_slow(
                 s_digits.as_mut_ptr(),
@@ -473,6 +527,7 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
             continue;
         }
 
+        // Convert LE-limb r, s to big-endian bytes for DER encoding
         let sig_r_bytes = le_limbs_to_be_bytes(&r_digits);
         let sig_s_bytes = le_limbs_to_be_bytes(&s_digits);
 
@@ -761,6 +816,9 @@ impl MiscDevice for SignerDevice {
         KBox::try_pin_init(try_pin_init! { SignerDevice { dev: dev } }, GFP_KERNEL)
     }
 
+    // ioctl dispatch: gate everything behind an fs-verity check.
+    // Only processes whose executable is protected by fs-verity
+    // may call any of these ioctls.
     fn ioctl(_me: Pin<&SignerDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
         if !current_exe_has_fsverity() {
             pr_info!("Signer: rejected ioctl from non-fsverity binary\n");
@@ -783,6 +841,12 @@ impl MiscDevice for SignerDevice {
                 pr_info!("Signer: returned certificate ({} bytes)\n", write_len);
                 Ok(write_len as isize)
             }
+            // Remote attestation ioctl:
+            //   1. Read the nonce from userspace (sent by the remote verifier).
+            //   2. Read the calling process's fs-verity digest (measurement).
+            //   3. Compute SHA256(measurement || nonce) inside the kernel.
+            //   4. Sign the hash with the ECDSA P-256 private key.
+            //   5. Return (hash, sig_r, sig_s, pubkey) to userspace.
             SIGNER_SIGN_DATA => {
                 let ptr = UserPtr::from_addr(arg);
                 let buf_size = _IOC_SIZE(cmd);
@@ -808,6 +872,7 @@ impl MiscDevice for SignerDevice {
 
                 let (digest_len, fsverity_digest) = current_exe_fsverity_digest()?;
 
+                // Message to sign: SHA256(fsverity_digest || nonce)
                 let to_sign_len = digest_len + 32;
                 let mut to_sign = [0u8; 96];
                 to_sign[..digest_len].copy_from_slice(&fsverity_digest[..digest_len]);

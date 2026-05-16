@@ -1,3 +1,18 @@
+# Remote attestation integration test.
+#
+# Flow:
+#   1. Attester VM boots, loads the signer module, creates a verity-protected
+#      copy of signer-app, and starts a TCP responder on port 9999.
+#   2. Verifier VM boots, generates a random 32-byte nonce, and sends it to
+#      the attester over TCP.
+#   3. Attester's responder runs `/mnt/signer-app <nonce_hex>`, which calls the
+#      SIGNER_SIGN_DATA ioctl.  The kernel signs SHA256(fsverity_digest || nonce)
+#      and returns (cert, hash, sig_r, sig_s, pubkey).
+#   4. Verifier prints the response, which the test driver captures.
+#   5. Test driver (host-side Python, with the cryptography library) verifies:
+#      - The nonce in the response matches what was sent.
+#      - The hash matches a host-computed reference.
+#      - The ECDSA signature verifies with the returned public key.
 import os, binascii, hashlib, time, base64
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
@@ -5,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 start_all()
 
+# ===== Phase 1: Attester setup =====
 attester.wait_for_unit("default.target")
 attester.succeed("modprobe ecc")
 attester.succeed("modprobe signer")
@@ -17,7 +33,9 @@ for line in dmesg.split("\n"):
 assert "Signer: loading" in dmesg
 assert "Signer: key pair generated" in dmesg
 
-# Set up fs-verity protected binary on attester
+# Set up fs-verity protected binary on attester.
+# The kernel module rejects ioctls from non-verity processes, so signer-app
+# must be on a verity-protected filesystem.
 attester.succeed("dd if=/dev/zero of=/tmp/verity.img bs=1M count=64")
 attester.succeed("mkfs.ext4 -O verity /tmp/verity.img")
 attester.succeed("mkdir -p /mnt && mount /tmp/verity.img /mnt")
@@ -28,7 +46,8 @@ fsverity_out = attester.succeed("fsverity measure /mnt/signer-app")
 fsverity_digest_hex = fsverity_out.strip().split()[0].split(":")[1]
 print("fs-verity digest hex:", fsverity_digest_hex)
 
-# Start TCP responder on attester (Python TCP server)
+# Start TCP responder on attester.
+# Protocol: reads a hex nonce line, runs signer-app, sends back the full output.
 responder_code = r"""
 import socket, subprocess
 
@@ -56,12 +75,12 @@ attester.succeed(f"echo {b64} | base64 -d > /tmp/responder.py")
 attester.succeed("nohup python3 /tmp/responder.py > /tmp/responder.log 2>&1 &")
 time.sleep(1)
 
-# Get attester's IP
+# Get attester's eth1 (inter-machine network) IP
 attester_ip = attester.succeed("ip -4 addr show eth1 | grep -oP '(?<=inet )\\S+' | cut -d/ -f1").strip()
 print("attester IP:", attester_ip)
 
-# ===== Remote attestation =====
-# Verifier generates a random nonce and sends it over the network
+# ===== Phase 2: Remote attestation =====
+# Verifier generates a random nonce and sends it over the network.
 
 verifier.wait_for_unit("default.target")
 
@@ -100,7 +119,8 @@ client_b64 = base64.b64encode(client_code.encode()).decode()
 out = verifier.succeed(f"echo {client_b64} | base64 -d | python3")
 print(out)
 
-# ===== Verification =====
+# ===== Phase 3: Cryptographic verification =====
+# (Host-side, using the cryptography library via extraPythonPackages)
 
 assert "SIGNER_HELLO" in out
 assert "SIGNER_GET_CERT" in out
@@ -113,7 +133,7 @@ response_nonce_hex = nonce_line[6:].strip()
 assert response_nonce_hex == nonce_hex, f"nonce mismatch: {response_nonce_hex} != {nonce_hex}"
 print("Nonce match verified")
 
-# Verify hash
+# Verify SHA256(fsverity_digest || nonce) matches kernel's hash
 hash_line = next(line for line in out.split("\n") if line.startswith("hash:"))
 kernel_hash_hex = hash_line[5:].strip()
 msg_raw = binascii.unhexlify(fsverity_digest_hex) + nonce
@@ -127,7 +147,7 @@ else:
     print("Hash MISMATCH!")
     raise Exception("Hash mismatch")
 
-# Verify ECDSA signature
+# Verify ECDSA signature using the returned public key
 sig_r_line = next(line for line in out.split("\n") if line.startswith("sig_r:"))
 sig_s_line = next(line for line in out.split("\n") if line.startswith("sig_s:"))
 sig_r_hex = sig_r_line[6:].strip()

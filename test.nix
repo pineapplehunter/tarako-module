@@ -1,3 +1,11 @@
+# NixOS VM integration test for the signer kernel module.
+#
+# Two-machine remote attestation scenario:
+#   - attester: runs the signer kernel module, exposes a TCP responder on port
+#               9999 that accepts a nonce and returns an ECDSA signature.
+#   - verifier: sends a random nonce over the network and receives the response.
+#
+# The test driver (host) cryptographically verifies the result.
 { testers }:
 let
   testPy = ./test/test.py;
@@ -5,6 +13,7 @@ in
 testers.runNixOSTest {
   name = "signer";
 
+  # cryptography is used by the test driver (host-side Python), not the VMs
   extraPythonPackages = p: [ p.cryptography ];
   skipTypeCheck = true;
 
@@ -12,7 +21,9 @@ testers.runNixOSTest {
     attester =
       { config, pkgs, ... }:
       let
+        # Build the kernel module against the running kernel
         signer-mod = (config.boot.kernelPackages.callPackage ./package.nix { });
+        # Build the userspace signer-app binary
         signer-app = pkgs.callPackage ./app/package.nix { };
       in
       {
@@ -29,15 +40,16 @@ testers.runNixOSTest {
           signer-mod
         ];
         boot.initrd.kernelModules = [
-          "ecc"
-          "signer"
+          "ecc"      # ECDSA crypto library
+          "signer"   # the signer module itself
         ];
         environment.systemPackages = [
-          signer-app
+          signer-app    # /mnt/signer-app — the fs-verity protected binary
           pkgs.openssl
-          pkgs.python3
+          pkgs.python3  # for the TCP responder
         ];
 
+        # The TCP responder listens on 9999 for nonces from the verifier
         networking.firewall.allowedTCPPorts = [ 9999 ];
 
         virtualisation = {
@@ -47,6 +59,7 @@ testers.runNixOSTest {
         };
       };
 
+    # Verifier only needs Python to send the nonce over TCP
     verifier =
       { pkgs, ... }:
       {

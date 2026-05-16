@@ -1,3 +1,15 @@
+// signer-app — userspace client for the signer kernel module.
+//
+// Opens /dev/signer and issues three ioctls in sequence:
+//   1. SIGNER_HELLO       — sanity check
+//   2. SIGNER_GET_CERT    — retrieve the self-signed X.509 certificate
+//   3. SIGNER_SIGN_DATA   — remote attestation: signs SHA256(fsverity_digest || nonce)
+//
+// The nonce can be provided as a 64-hex-char command-line argument.
+// Without an argument, a hardcoded nonce is used (for testing).
+//
+// This binary must reside on an fs-verity-protected filesystem; the kernel
+// module rejects ioctls from non-verity processes.
 use std::os::unix::io::AsRawFd;
 
 const SIGNER_HELLO: libc::c_ulong = 0x0000_5300;
@@ -35,6 +47,7 @@ fn parse_hex_nonce(s: &str) -> Option<[u8; 32]> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // Use the provided hex nonce, or fall back to a hardcoded one
     let nonce: [u8; 32] = if args.len() > 1 {
         parse_hex_nonce(&args[1]).unwrap_or_else(|| {
             eprintln!("usage: {} [64-hex-nonce]", args[0]);
@@ -56,12 +69,12 @@ fn main() {
         .expect("failed to open /dev/signer");
     let fd = file.as_raw_fd();
 
-    // 1. Hello
+    // 1. Hello — verify the device is responsive
     println!("=== SIGNER_HELLO ===");
     let ret = unsafe { libc::ioctl(fd, SIGNER_HELLO) };
     println!("ioctl return: {ret}\n");
 
-    // 2. Get certificate
+    // 2. Get certificate — retrieve the self-signed X.509 certificate
     println!("=== SIGNER_GET_CERT ===");
     let mut cert = [0u8; 2048];
     let ret = unsafe { libc::ioctl(fd, SIGNER_GET_CERT, cert.as_mut_ptr() as *mut libc::c_void) };
