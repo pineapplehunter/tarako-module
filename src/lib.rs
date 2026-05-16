@@ -42,9 +42,9 @@ mod ecc {
     }
 
     // From include/crypto/ecdh.h: ECC_CURVE_NIST_P256 = 0x0002
-    const P256: u32 = 0x0002;
+    pub const P256: u32 = 0x0002;
     // From include/crypto/internal/ecc.h: ECC_CURVE_NIST_P256_DIGITS = 4
-    const DIGITS: u32 = 4;
+    pub const DIGITS: u32 = 4;
 
     extern "C" {
         pub fn ecc_gen_privkey(curve_id: c_uint, ndigits: c_uint, key: *mut u64) -> c_int;
@@ -95,13 +95,6 @@ mod ecc {
         ) -> c_int;
     }
 
-    pub fn p256_ndigits() -> u32 {
-        DIGITS
-    }
-    pub fn p256_curve_id() -> u32 {
-        P256
-    }
-
     pub fn get_curve_n() -> Option<[u64; 4]> {
         let curve = unsafe { ecc_get_curve(P256) };
         if curve.is_null() {
@@ -113,6 +106,16 @@ mod ecc {
         }
         Some(unsafe { core::ptr::read(n_ptr as *const [u64; 4]) })
     }
+}
+
+fn uncompressed_pubkey_bytes(pub_x: &[u64; 4], pub_y: &[u64; 4]) -> [u8; 65] {
+    let mut out = [0u8; 65];
+    out[0] = 0x04;
+    let xb = digits_to_be_bytes(pub_x);
+    let yb = digits_to_be_bytes(pub_y);
+    out[1..33].copy_from_slice(&xb);
+    out[33..65].copy_from_slice(&yb);
+    out
 }
 
 fn digits_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
@@ -291,10 +294,6 @@ module! {
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
-// NIST P-256 uses 4 × u64; `DIGITS` in mod ecc is the same value from
-// the kernel's `ECC_CURVE_NIST_P256_DIGITS` (include/crypto/internal/ecc.h).
-const P256_DIGITS: usize = 4;
-
 // OID 1.2.840.10045.2.1 — id-ecPublicKey (ANSI X9.62, RFC 5480 sec 2.1.1)
 const OID_EC_PUBKEY: [u32; 6] = [1, 2, 840, 10045, 2, 1];
 // OID 1.2.840.10045.3.1.7 — secp256r1 / prime256v1 (ANSI X9.62, SEC 2)
@@ -328,7 +327,7 @@ const SUBJECT: &[u8] = b"signer";
 /* ------------------------------------------------------------------ */
 
 struct KeyPair {
-    private: [u64; P256_DIGITS],
+    private: [u64; ecc::DIGITS as usize],
     cert: [u8; 2048],
     cert_len: usize,
 }
@@ -343,20 +342,20 @@ kernel::sync::global_lock! {
 
 fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
     let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
-    let ndigits = ecc::p256_ndigits();
+    let ndigits = ecc::DIGITS;
     let mut data_hash = [0u8; 32];
     unsafe { ecc::sha256(data.as_ptr(), data.len() as c_ulong, data_hash.as_mut_ptr()) };
 
     loop {
         let mut k = [0u64; 4];
-        let ret = unsafe { ecc::ecc_gen_privkey(ecc::p256_curve_id(), ndigits, k.as_mut_ptr()) };
+        let ret = unsafe { ecc::ecc_gen_privkey(ecc::P256, ndigits, k.as_mut_ptr()) };
         if ret < 0 {
             return Err(EINVAL);
         }
 
         let mut pubk = [0u64; 8];
         let ret = unsafe {
-            ecc::ecc_make_pub_key(ecc::p256_curve_id(), ndigits, k.as_ptr(), pubk.as_mut_ptr())
+            ecc::ecc_make_pub_key(ecc::P256, ndigits, k.as_ptr(), pubk.as_mut_ptr())
         };
         if ret < 0 {
             return Err(EINVAL);
@@ -448,12 +447,7 @@ fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u8; 32], [u8; 32])> {
 /* ------------------------------------------------------------------ */
 
 fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> Result<[u8; 2048]> {
-    let mut pubkey_bytes = [0u8; 65];
-    pubkey_bytes[0] = 0x04;
-    let x_bytes = digits_to_be_bytes(pub_x);
-    let y_bytes = digits_to_be_bytes(pub_y);
-    pubkey_bytes[1..33].copy_from_slice(&x_bytes);
-    pubkey_bytes[33..65].copy_from_slice(&y_bytes);
+    let pubkey_bytes = uncompressed_pubkey_bytes(pub_x, pub_y);
 
     let mut spki = DerBuf::new()?;
     {
@@ -556,43 +550,29 @@ fn build_certificate(privkey: &[u64; 4], pub_x: &[u64; 4], pub_y: &[u64; 4]) -> 
 }
 
 fn generate_key_pair() -> Result<KeyPair> {
-    let mut private = [0u64; P256_DIGITS];
-    let mut public = [0u64; P256_DIGITS * 2];
+    let mut private = [0u64; ecc::DIGITS as usize];
+    let mut public = [0u64; ecc::DIGITS as usize * 2];
 
     let ret = unsafe {
-        ecc::ecc_gen_privkey(
-            ecc::p256_curve_id(),
-            ecc::p256_ndigits(),
-            private.as_mut_ptr(),
-        )
+        ecc::ecc_gen_privkey(ecc::P256, ecc::DIGITS, private.as_mut_ptr())
     };
     if ret < 0 {
         return Err(EINVAL);
     }
 
     let ret = unsafe {
-        ecc::ecc_make_pub_key(
-            ecc::p256_curve_id(),
-            ecc::p256_ndigits(),
-            private.as_ptr(),
-            public.as_mut_ptr(),
-        )
+        ecc::ecc_make_pub_key(ecc::P256, ecc::DIGITS, private.as_ptr(), public.as_mut_ptr())
     };
     if ret < 0 {
         return Err(EINVAL);
     }
 
-    let mut pub_x = [0u64; P256_DIGITS];
-    let mut pub_y = [0u64; P256_DIGITS];
-    pub_x.copy_from_slice(&public[..P256_DIGITS]);
-    pub_y.copy_from_slice(&public[P256_DIGITS..]);
+    let mut pub_x = [0u64; ecc::DIGITS as usize];
+    let mut pub_y = [0u64; ecc::DIGITS as usize];
+    pub_x.copy_from_slice(&public[..ecc::DIGITS as usize]);
+    pub_y.copy_from_slice(&public[ecc::DIGITS as usize..]);
 
-    let mut pubkey_bytes = [0u8; 65];
-    pubkey_bytes[0] = 0x04;
-    let x_bytes = digits_to_be_bytes(&pub_x);
-    let y_bytes = digits_to_be_bytes(&pub_y);
-    pubkey_bytes[1..33].copy_from_slice(&x_bytes);
-    pubkey_bytes[33..65].copy_from_slice(&y_bytes);
+    let pubkey_bytes = uncompressed_pubkey_bytes(&pub_x, &pub_y);
 
     let _ima_ret = unsafe {
         ecc::ima_measure_critical_data(
