@@ -30,7 +30,10 @@ pub(crate) fn digits_to_be_bytes(digits: &[u64; 4]) -> [u8; 32] {
     }
     pr_info!(
         "Signer: raw words {:016x}{:016x}{:016x}{:016x}\n",
-        digits[0], digits[1], digits[2], digits[3],
+        digits[0],
+        digits[1],
+        digits[2],
+        digits[3],
     );
     out
 }

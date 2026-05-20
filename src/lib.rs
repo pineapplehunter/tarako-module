@@ -23,7 +23,6 @@ pub(crate) mod cert {
 pub(crate) mod convert {
     include!("convert.rs");
 }
-#[allow(dead_code, unreachable_pub)]
 pub(crate) mod ecc {
     include!("ecc.rs");
 }
@@ -36,9 +35,14 @@ pub(crate) mod signer_dev {
 
 use kernel::miscdevice::{MiscDeviceOptions, MiscDeviceRegistration};
 use kernel::prelude::*;
+use kernel::sync::SetOnce;
 
-use crate::ioctl::{generate_key_pair, KEY_PAIR};
+use crate::ioctl::{ generate_key_pair};
 use crate::signer_dev::SignerDevice;
+use crate::ioctl::KeyPair;
+
+// Kernel key pair for signing
+pub(crate) static KEY_PAIR: SetOnce<KeyPair> = SetOnce::new();
 
 module! {
     type: SignerModule,
@@ -58,13 +62,10 @@ impl kernel::InPlaceModule for SignerModule {
     fn init(_module: &'static ThisModule) -> impl PinInit<Self, Error> {
         pr_info!("Signer: loading, generating ECDSA P-256 key pair\n");
 
-        unsafe { KEY_PAIR.init() };
-
         match generate_key_pair() {
             Ok(kp) => {
-                let mut guard = KEY_PAIR.lock();
-                *guard = Some(kp);
-                let len = guard.as_ref().map(|k| k.cert_len).unwrap_or(0);
+                KEY_PAIR.populate(kp);
+                let len = KEY_PAIR.as_ref().map(|k| k.cert_len).unwrap_or(0);
                 pr_info!(
                     "Signer: key pair generated, certificate ready ({} bytes)\n",
                     len

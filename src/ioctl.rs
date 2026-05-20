@@ -11,6 +11,8 @@ use kernel::prelude::*;
 use kernel::sync::rcu;
 use kernel::uaccess::{UserPtr, UserSlice};
 
+use crate::KEY_PAIR;
+
 // ioctl command numbers: type 'S' (0x53), sequence 0..2
 pub(crate) const SIGNER_HELLO: u32 = _IO('S' as u32, 0x00);
 pub(crate) const SIGNER_GET_CERT: u32 = _IOR::<[u8; 2048]>('S' as u32, 0x01);
@@ -30,10 +32,6 @@ pub(crate) struct KeyPair {
     pub pubkey: [u8; 65],
     pub cert: [u8; 2048],
     pub cert_len: usize,
-}
-
-kernel::sync::global_lock! {
-    pub(crate) unsafe(uninit) static KEY_PAIR: Mutex<Option<KeyPair>> = None;
 }
 
 pub(crate) fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u64; 4], [u64; 4])> {
@@ -97,16 +95,25 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     if let Some(n) = ecc::get_curve_n() {
         pr_info!(
             "Signer: curve N words ({:016x}{:016x}{:016x}{:016x})\n",
-            n[0], n[1], n[2], n[3]
+            n[0],
+            n[1],
+            n[2],
+            n[3]
         );
     }
     pr_info!(
         "Signer: pubkey X words ({:016x}{:016x}{:016x}{:016x})\n",
-        pub_x[0], pub_x[1], pub_x[2], pub_x[3]
+        pub_x[0],
+        pub_x[1],
+        pub_x[2],
+        pub_x[3]
     );
     pr_info!(
         "Signer: pubkey Y words ({:016x}{:016x}{:016x}{:016x})\n",
-        pub_y[0], pub_y[1], pub_y[2], pub_y[3]
+        pub_y[0],
+        pub_y[1],
+        pub_y[2],
+        pub_y[3]
     );
     {
         let mut hex = [0u8; 130];
@@ -123,8 +130,10 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
         );
     }
 
-    ecc::ima_measure_pubkey(&pubkey_bytes);
-
+    match ecc::ima_measure_pubkey(&pubkey_bytes) {
+        Ok(_) => pr_info!("Signer: Public key successfully logged in IMA\n"),
+        Err(e) => pr_err!("Signer: IMA measurement failed: {:?}\n", e),
+    };
     let (cert, cert_len) = cert::build_certificate(&private, &pub_x, &pub_y)?;
 
     Ok(KeyPair {
@@ -135,30 +144,21 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     })
 }
 
-// From include/uapi/linux/fs.h: FS_VERITY_FL = 0x00100000
-const S_VERITY: u32 = 1 << 16;
+/// taken from linux/fsverity.h
+const FS_VERITY_MAX_DIGEST_SIZE: usize = 64;
 
-fn current_exe_has_fsverity() -> bool {
-    let current = crate::current!();
-    let Some(mm) = current.mm() else {
-        return false;
-    };
-    let mm_ptr = mm.as_raw();
-    if mm_ptr.is_null() {
-        return false;
-    }
-    let guard = rcu::read_lock();
-    let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
-    if exe_file.is_null() {
-        return false;
-    }
-    let inode = unsafe { *(*exe_file).f_inode };
-    let has_verity = inode.i_flags as u32 & S_VERITY != 0;
-    drop(guard);
-    has_verity
+pub(crate) struct FsverityDigest {
+    size: usize,
+    buffer: [u8; FS_VERITY_MAX_DIGEST_SIZE],
 }
 
-fn current_exe_fsverity_digest() -> Result<(usize, [u8; 64])> {
+impl FsverityDigest {
+    pub(crate) fn digest(&self) -> &[u8] {
+        &self.buffer[..self.size]
+    }
+}
+
+fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
     let current = crate::current!();
     let mm = current.mm().ok_or(EPERM)?;
     let mm_ptr = mm.as_raw();
@@ -171,14 +171,25 @@ fn current_exe_fsverity_digest() -> Result<(usize, [u8; 64])> {
         return Err(EPERM);
     }
     let inode = unsafe { (*exe_file).f_inode as *mut u8 };
-    let mut digest = [0u8; 64];
-    let ret = unsafe {
-        ecc::fsverity_get_digest(inode, digest.as_mut_ptr(), core::ptr::null_mut(), core::ptr::null_mut())
+    let mut digest = FsverityDigest {
+        size: 0,
+        buffer: [0; FS_VERITY_MAX_DIGEST_SIZE],
     };
-    if ret <= 0 {
+    let ret = unsafe {
+        ecc::fsverity_get_digest(
+            inode,
+            digest.buffer.as_mut_ptr(),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    };
+    if ret < 0 {
         return Err(EPERM);
+    } else if ret == 0 {
+        return Err(ENOENT);
     }
-    Ok((ret as usize, digest))
+    digest.size = ret as usize;
+    Ok(digest)
 }
 
 fn sign_data_req_bytes_mut(req: &mut SignDataReq) -> &mut [u8] {
@@ -213,8 +224,7 @@ fn write_sign_data_req(arg: usize, buf_size: usize, req: &SignDataReq) -> Result
 }
 
 pub(crate) fn handle_get_cert(arg: usize, cmd: u32) -> Result<isize> {
-    let guard = KEY_PAIR.lock();
-    let kp = guard.as_ref().ok_or(ENXIO)?;
+    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let ptr = UserPtr::from_addr(arg);
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
     let write_len = core::cmp::min(kp.cert_len, buf_size);
@@ -226,19 +236,19 @@ pub(crate) fn handle_get_cert(arg: usize, cmd: u32) -> Result<isize> {
 
 pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
+
+    let digest = current_exe_fsverity_digest()?;
+    let digest = digest.digest();
+
     let mut req = read_sign_data_req(arg, buf_size)?;
-
-    let (digest_len, fsverity_digest) = current_exe_fsverity_digest()?;
-
-    let to_sign_len = digest_len + 32;
+    let to_sign_len = digest.len() + 32;
     let mut to_sign = [0u8; 96];
-    to_sign[..digest_len].copy_from_slice(&fsverity_digest[..digest_len]);
-    to_sign[digest_len..to_sign_len].copy_from_slice(&req.nonce);
+    to_sign[..digest.len()].copy_from_slice(&digest);
+    to_sign[digest.len()..to_sign_len].copy_from_slice(&req.nonce);
 
     req.hash = ecc::sha256_hash(&to_sign[..to_sign_len]);
 
-    let guard = KEY_PAIR.lock();
-    let kp = guard.as_ref().ok_or(ENXIO)?;
+    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let (sig_r_limbs, sig_s_limbs) = ecdsa_sign(&to_sign[..to_sign_len], &kp.private)?;
     for (i, limb) in sig_r_limbs.iter().enumerate() {
         req.sig_r[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_ne_bytes());
@@ -247,7 +257,6 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
         req.sig_s[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_ne_bytes());
     }
     req.pubkey.copy_from_slice(&kp.pubkey);
-    drop(guard);
 
     write_sign_data_req(arg, buf_size, &req)?;
 
@@ -256,9 +265,5 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 }
 
 pub(crate) fn check_fsverity() -> Result {
-    if !current_exe_has_fsverity() {
-        pr_info!("Signer: rejected ioctl from non-fsverity binary\n");
-        return Err(EPERM);
-    }
-    Ok(())
+    current_exe_fsverity_digest().map(|_| ())
 }

@@ -27,11 +27,12 @@
             ];
           };
 
-          packages.kernel-module = pkgs.linuxPackages_latest.callPackage ./package.nix { };
+          packages.default = pkgs.linuxPackages_latest.callPackage ./package.nix { };
 
-          packages.default = pkgs.callPackage ./app/package.nix { };
+          packages.app = pkgs.callPackage ./app/package.nix { };
 
           checks.nixos-test = pkgs.callPackage ./test.nix { };
+          checks.rejection-test = pkgs.callPackage ./rejection-test.nix { };
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [

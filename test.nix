@@ -6,10 +6,7 @@
 #   - verifier: sends a random nonce over the network and receives the response.
 #
 # The test driver (host) cryptographically verifies the result.
-{ testers }:
-let
-  testPy = ./test/test.py;
-in
+{ lib, testers }:
 testers.runNixOSTest {
   name = "signer";
 
@@ -36,17 +33,12 @@ testers.runNixOSTest {
         custom.ima.enable = true;
 
         boot.kernelPackages = pkgs.linuxPackages_latest;
-        boot.extraModulePackages = [
-          signer-mod
-        ];
-        boot.initrd.kernelModules = [
-          "ecc"      # ECDSA crypto library
-          "signer"   # the signer module itself
-        ];
+        boot.extraModulePackages = [ signer-mod ];
+        boot.kernelModules = [ "signer" ];
         environment.systemPackages = [
-          signer-app    # /mnt/signer-app — the fs-verity protected binary
+          signer-app # /mnt/signer-app — the fs-verity protected binary
           pkgs.openssl
-          pkgs.python3  # for the TCP responder
+          pkgs.python3 # for the TCP responder
         ];
 
         # The TCP responder listens on 9999 for nonces from the verifier
@@ -54,7 +46,6 @@ testers.runNixOSTest {
 
         virtualisation = {
           tpm.enable = true;
-          cores = 4;
           useEFIBoot = true;
         };
       };
@@ -63,15 +54,9 @@ testers.runNixOSTest {
     verifier =
       { pkgs, ... }:
       {
-        environment.systemPackages = [
-          pkgs.python3
-        ];
-
-        virtualisation = {
-          cores = 2;
-        };
+        environment.systemPackages = [ pkgs.python3 ];
       };
   };
 
-  testScript = builtins.readFile testPy;
+  testScript = lib.readFile ./test/test.py;
 }

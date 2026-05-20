@@ -7,7 +7,7 @@
 
 use crate::convert;
 use crate::ioctl;
-use kernel::alloc::{flags::GFP_KERNEL, KBox};
+use kernel::alloc::{KBox, flags::GFP_KERNEL};
 use kernel::prelude::*;
 
 // OID 1.2.840.10045.2.1 - id-ecPublicKey (ANSI X9.62, RFC 5480 sec 2.1.1)

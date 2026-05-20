@@ -3,11 +3,11 @@
 // The `/dev/signer` miscdevice and its file_operations / ioctl dispatch.
 
 use crate::ioctl;
+use kernel::alloc::flags::GFP_KERNEL;
 use kernel::device::Device;
 use kernel::fs::File;
 use kernel::miscdevice::{MiscDevice, MiscDeviceRegistration};
 use kernel::prelude::*;
-use kernel::alloc::flags::GFP_KERNEL;
 use kernel::sync::aref::ARef;
 
 #[pin_data(PinnedDrop)]
