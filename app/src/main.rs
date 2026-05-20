@@ -10,6 +10,8 @@
 //
 // This binary must reside on an fs-verity-protected filesystem; the kernel
 // module rejects ioctls from non-verity processes.
+use der::asn1::{BitString, ObjectIdentifier, UintRef};
+use der::{Encode, SliceWriter, Tag};
 use std::os::unix::io::AsRawFd;
 
 const SIGNER_HELLO: libc::c_ulong = 0x0000_5300;
@@ -33,26 +35,64 @@ fn hex(buf: &[u8]) -> String {
     s
 }
 
-fn pubkey_to_pem(pubkey: &[u8; 65]) -> String {
-    // DER SubjectPublicKeyInfo for EC P-256
-    let mut der = vec![
-        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08,
-        0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
-    ];
-    der.extend_from_slice(pubkey);
-    let pem = pem::Pem::new("KERNEL PUBLIC KEY", der);
-    pem::encode(&pem)
+fn pubkey_der(pubkey: &[u8; 65]) -> Vec<u8> {
+    let algo_oid = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+    let curve_oid = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
+
+    let algo_inner_len =
+        (algo_oid.encoded_len().unwrap() + curve_oid.encoded_len().unwrap()).unwrap();
+    let algo_outer_len = algo_inner_len.for_tlv(Tag::Sequence).unwrap();
+
+    let pk_bitstring = BitString::from_bytes(pubkey).unwrap();
+    let pk_len = pk_bitstring.encoded_len().unwrap();
+
+    let content_len = (algo_outer_len + pk_len).unwrap();
+    let total_len = usize::try_from(content_len.for_tlv(Tag::Sequence).unwrap()).unwrap();
+
+    let mut buf = vec![0u8; total_len];
+    let mut writer = SliceWriter::new(&mut buf);
+    writer
+        .sequence(content_len, |w| {
+            w.sequence(algo_inner_len, |w| {
+                algo_oid.encode(w)?;
+                curve_oid.encode(w)
+            })?;
+            pk_bitstring.encode(w)
+        })
+        .unwrap();
+    buf
 }
 
-// The kernel returns signature r, s as raw LE-limb u64 bytes.
-// Convert to big-endian hex for human-readable display.
-fn le_limbs_to_be_hex(raw: &[u8; 32]) -> String {
+// Convert kernel's LE-limb u64 format to big-endian bytes.
+fn le_limbs_to_be(raw: &[u8; 32]) -> [u8; 32] {
     let mut be = [0u8; 32];
     for i in 0..4 {
         let limb = u64::from_le_bytes(raw[(3 - i) * 8..(4 - i) * 8].try_into().unwrap());
         be[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_be_bytes());
     }
-    hex(&be)
+    be
+}
+
+fn le_limbs_to_be_hex(raw: &[u8; 32]) -> String {
+    hex(&le_limbs_to_be(raw))
+}
+
+fn sig_der(sig_r: &[u8; 32], sig_s: &[u8; 32]) -> Vec<u8> {
+    let r = UintRef::new(sig_r).unwrap();
+    let s = UintRef::new(sig_s).unwrap();
+
+    let content_len = (r.encoded_len().unwrap() + s.encoded_len().unwrap()).unwrap();
+    let total_len = usize::try_from(content_len.for_tlv(Tag::Sequence).unwrap()).unwrap();
+
+    let mut buf = vec![0u8; total_len];
+    let mut writer = SliceWriter::new(&mut buf);
+    writer
+        .sequence(content_len, |w| {
+            r.encode(w)?;
+            s.encode(w)
+        })
+        .unwrap();
+    buf
 }
 
 fn parse_hex_nonce(s: &str) -> Option<[u8; 32]> {
@@ -107,9 +147,8 @@ fn main() {
     };
     let pubkey_len = if ret > 0 { ret as usize } else { 0 };
     println!("ioctl return: {ret}");
-    println!("public key ({pubkey_len} bytes):");
-    println!("{}", pubkey_to_pem(&pubkey));
-    println!();
+    println!("public key ({pubkey_len} bytes) DER:");
+    println!("{}", hex(&pubkey_der(&pubkey)));
 
     // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
     println!("=== SIGNER_SIGN_DATA ===");
@@ -133,5 +172,8 @@ fn main() {
     // Kernel returns raw LE-limb bytes; convert to big-endian hex for display
     println!("sig_r: {}", le_limbs_to_be_hex(&req.sig_r));
     println!("sig_s: {}", le_limbs_to_be_hex(&req.sig_s));
-    println!("pubkey: {}", hex(&req.pubkey));
+    let sig_r_be = le_limbs_to_be(&req.sig_r);
+    let sig_s_be = le_limbs_to_be(&req.sig_s);
+    println!("signature DER:");
+    println!("{}", hex(&sig_der(&sig_r_be, &sig_s_be)));
 }

@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+der = { version = "0.8.0", features = ["std", "oid"] }
 libc = "0.2"
-pem = "3.0.6"

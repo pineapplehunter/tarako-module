@@ -26,6 +26,11 @@ make -C driver                      # local kernel module build (uses running ke
 - **`modules/`**: NixOS modules enabling `FS_VERITY` and `IMA` kernel config
 - **`test/`**: NixOS VM test definitions and scripts (`attestation.*`, `feature-lacking-kernel.*`)
 
+## About Cryptography
+- Use der format in most cases
+- Use ECC in most cases
+- MUST use specialized library to parse or format DER data. DO NOT role your own formatter or parser.
+
 # References
 
 Nixpkgs source code: `/home/takata/tmp/nixpkgs.git/master`

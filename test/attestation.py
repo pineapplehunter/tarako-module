@@ -120,7 +120,7 @@ print(out)
 assert "SIGNER_HELLO" in out
 assert "SIGNER_GET_PUBKEY" in out
 assert "SIGNER_SIGN_DATA" in out
-assert "BEGIN KERNEL PUBLIC KEY" in out
+assert "public key (65 bytes) DER:" in out
 
 # Verify nonce in response matches what verifier sent
 nonce_line = next(line for line in out.split("\n") if line.startswith("nonce:"))
@@ -128,21 +128,8 @@ response_nonce_hex = nonce_line[6:].strip()
 assert response_nonce_hex == nonce_hex, f"nonce mismatch: {response_nonce_hex} != {nonce_hex}"
 print("Nonce match verified")
 
-# Parse signature from sign data response
-sig_r_line = next(line for line in out.split("\n") if line.startswith("sig_r:"))
-sig_s_line = next(line for line in out.split("\n") if line.startswith("sig_s:"))
-sig_r_hex = sig_r_line[6:].strip()
-sig_s_hex = sig_s_line[6:].strip()
-
-# Parse public key from sign data response
-pubkey_line = next(line for line in out.split("\n") if line.startswith("pubkey:"))
-pubkey_hex = pubkey_line[7:].strip()
-pubkey_bytes = binascii.unhexlify(pubkey_hex)
-
-# Build raw message (fsverity_digest || nonce)
-msg_raw = binascii.unhexlify(fsverity_digest_hex) + nonce
-
 # Print reference hash for debugging
+msg_raw = binascii.unhexlify(fsverity_digest_hex) + nonce
 hash_line = next(line for line in out.split("\n") if line.startswith("hash:"))
 kernel_hash_hex = hash_line[5:].strip()
 ref_hash = hashlib.sha256(msg_raw).hexdigest()
@@ -153,31 +140,23 @@ if kernel_hash_hex != ref_hash:
 else:
     print("Hash matches")
 
-# Build DER-encoded ECDSA signature (SEQUENCE { INTEGER r, INTEGER s })
-def der_int_bytes(val):
-    if val[0] & 0x80:
-        val = b'\x00' + val
-    return bytes([0x02, len(val)]) + val
+# Extract hex DER public key and signature from output
+out_lines = out.split("\n")
+pubkey_idx = next(i for i, l in enumerate(out_lines) if l.startswith("public key (65 bytes) DER:"))
+pubkey_hex = next(l for l in out_lines[pubkey_idx + 1:] if l.strip())
+sig_idx = next(i for i, l in enumerate(out_lines) if l.startswith("signature DER:"))
+sig_hex = next(l for l in out_lines[sig_idx + 1:] if l.strip())
+print("=== Public key DER (hex) ===")
+print(pubkey_hex)
+print("=== Signature DER (hex) ===")
+print(sig_hex)
 
-r_bytes = binascii.unhexlify(sig_r_hex)
-s_bytes = binascii.unhexlify(sig_s_hex)
-sig_der = (bytes([0x30, len(der_int_bytes(r_bytes)) + len(der_int_bytes(s_bytes))])
-           + der_int_bytes(r_bytes) + der_int_bytes(s_bytes))
-
-# Build DER-encoded SubjectPublicKeyInfo for EC P-256
-spki_der = (b'\x30\x59' b'\x30\x13'
-            b'\x06\x07\x2a\x86\x48\xce\x3d\x02\x01'
-            b'\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07'
-            b'\x03\x42\x00') + pubkey_bytes
-
-# Transfer files to attester VM and verify with openssl
-for name, data in [("/tmp/msg.bin", msg_raw),
-                   ("/tmp/sig.der", sig_der),
-                   ("/tmp/pubkey.der", spki_der)]:
-    b = base64.b64encode(data).decode()
-    attester.succeed(f'echo "{b}" | base64 -d > {name}')
-
-attester.succeed("openssl ec -pubin -inform DER -in /tmp/pubkey.der -out /tmp/pubkey.pem 2>/dev/null")
-vout = attester.succeed("openssl dgst -sha256 -verify /tmp/pubkey.pem -signature /tmp/sig.der /tmp/msg.bin")
+# Write message and DER files to attester, then verify via openssl
+pubkey_der_bytes = bytes.fromhex(pubkey_hex)
+sig_der_bytes = bytes.fromhex(sig_hex)
+attester.succeed('echo "{}" | base64 -d > /tmp/pubkey.der'.format(base64.b64encode(pubkey_der_bytes).decode()))
+attester.succeed('echo "{}" | base64 -d > /tmp/sig.der'.format(base64.b64encode(sig_der_bytes).decode()))
+attester.succeed('echo "{}" | base64 -d > /tmp/msg.bin'.format(base64.b64encode(msg_raw).decode()))
+vout = attester.succeed("openssl dgst -sha256 -verify /tmp/pubkey.der -keyform DER -signature /tmp/sig.der /tmp/msg.bin")
 assert "Verified OK" in vout, f"openssl verification failed: {vout}"
 print("ECDSA signature verified OK")
