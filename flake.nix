@@ -27,7 +27,7 @@
             ];
           };
 
-          packages.default = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
+          packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };

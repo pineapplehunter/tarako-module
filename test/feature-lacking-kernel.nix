@@ -8,7 +8,7 @@ testers.runNixOSTest {
       signer-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
     in
     {
-      boot.kernelPackages = pkgs.linuxPackages_latest;
+      boot.kernelPackages = pkgs.linuxPackages;
       boot.extraModulePackages = [ signer-mod ];
       environment.systemPackages = [ pkgs.python3 ];
       virtualisation = {

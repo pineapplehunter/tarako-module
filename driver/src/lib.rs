@@ -28,19 +28,21 @@ pub(crate) mod ffi {
 pub(crate) mod ioctl {
     include!("ioctl.rs");
 }
+pub(crate) mod set_once {
+    include!("set_once.rs");
+}
 pub(crate) mod signer_dev {
     include!("signer_dev.rs");
 }
 
 use kernel::miscdevice::{MiscDeviceOptions, MiscDeviceRegistration};
 use kernel::prelude::*;
-use kernel::sync::SetOnce;
 
-use crate::ioctl::{ generate_key_pair};
-use crate::signer_dev::SignerDevice;
+use crate::ioctl::generate_key_pair;
 use crate::ioctl::KeyPair;
+use crate::set_once::SetOnce;
+use crate::signer_dev::SignerDevice;
 
-// Kernel key pair for signing
 pub(crate) static KEY_PAIR: SetOnce<KeyPair> = SetOnce::new();
 
 module! {
@@ -71,7 +73,9 @@ impl kernel::InPlaceModule for SignerModule {
             }
         }
 
-        let options = MiscDeviceOptions { name: c"signer" };
+        let options = MiscDeviceOptions {
+            name: kernel::c_str!("signer"),
+        };
         try_pin_init!(Self {
             _miscdev <- MiscDeviceRegistration::register(options),
         })

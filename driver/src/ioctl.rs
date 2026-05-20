@@ -11,8 +11,6 @@ use kernel::prelude::*;
 use kernel::sync::rcu;
 use kernel::uaccess::{UserPtr, UserSlice};
 
-use crate::KEY_PAIR;
-
 const DIGITS: usize = ecc::P256_DIGITS as usize;
 const BYTES: usize = ecc::P256_BYTES as usize;
 const PUBKEY_BYTES: usize = ecc::P256_PUBKEY_BYTES;
@@ -226,7 +224,7 @@ fn write_sign_data_req(arg: usize, buf_size: usize, req: &SignDataReq) -> Result
 }
 
 pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
-    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
+    let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let ptr = UserPtr::from_addr(arg);
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
     let write_len = core::cmp::min(kp.pubkey.len(), buf_size);
@@ -250,7 +248,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 
     req.hash = ecc::sha256_hash(&to_sign[..to_sign_len]);
 
-    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
+    let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let (sig_r_limbs, sig_s_limbs) = ecdsa_sign(&to_sign[..to_sign_len], &kp.private)?;
     for (i, limb) in sig_r_limbs.iter().enumerate() {
         req.sig_r[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
