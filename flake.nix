@@ -28,7 +28,7 @@
           };
 
           packages.default = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
-          packages.app = pkgs.callPackage ./app/package.nix { };
+          packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
           checks.feature-lacking-kernel = pkgs.callPackage ./test/feature-lacking-kernel.nix { };

@@ -132,7 +132,7 @@ fn main() {
 
     // 1. Hello — verify the device is responsive
     println!("=== SIGNER_HELLO ===");
-    let ret = unsafe { libc::ioctl(fd, SIGNER_HELLO) };
+    let ret = unsafe { libc::ioctl(fd, SIGNER_HELLO as _) };
     println!("ioctl return: {ret}\n");
 
     // 2. Get public key — retrieve the raw ECDSA P-256 public key
@@ -141,7 +141,7 @@ fn main() {
     let ret = unsafe {
         libc::ioctl(
             fd,
-            SIGNER_GET_PUBKEY,
+            SIGNER_GET_PUBKEY as _,
             pubkey.as_mut_ptr() as *mut libc::c_void,
         )
     };
@@ -162,7 +162,7 @@ fn main() {
     let ret = unsafe {
         libc::ioctl(
             fd,
-            SIGNER_SIGN_DATA,
+            SIGNER_SIGN_DATA as _,
             &mut req as *mut _ as *mut libc::c_void,
         )
     };

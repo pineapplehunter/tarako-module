@@ -17,7 +17,7 @@ testers.runNixOSTest {
         # Build the kernel module against the running kernel
         signer-mod = (config.boot.kernelPackages.callPackage ../driver/package.nix { });
         # Build the userspace signer-app binary
-        signer-app = pkgs.callPackage ../app/package.nix { };
+        signer-app = pkgs.pkgsStatic.callPackage ../app/package.nix { };
       in
       {
         imports = [
