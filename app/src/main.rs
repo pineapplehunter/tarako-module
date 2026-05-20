@@ -33,6 +33,17 @@ fn hex(buf: &[u8]) -> String {
     s
 }
 
+fn pubkey_to_pem(pubkey: &[u8; 65]) -> String {
+    // DER SubjectPublicKeyInfo for EC P-256
+    let mut der = vec![
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08,
+        0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+    ];
+    der.extend_from_slice(pubkey);
+    let pem = pem::Pem::new("KERNEL PUBLIC KEY", der);
+    pem::encode(&pem)
+}
+
 // The kernel returns signature r, s as raw LE-limb u64 bytes.
 // Convert to big-endian hex for human-readable display.
 fn le_limbs_to_be_hex(raw: &[u8; 32]) -> String {
@@ -97,7 +108,7 @@ fn main() {
     let pubkey_len = if ret > 0 { ret as usize } else { 0 };
     println!("ioctl return: {ret}");
     println!("public key ({pubkey_len} bytes):");
-    println!("  hex: {}", hex(&pubkey[..pubkey_len]));
+    println!("{}", pubkey_to_pem(&pubkey));
     println!();
 
     // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))

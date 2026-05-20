@@ -3,9 +3,9 @@ testers.runNixOSTest {
   name = "signer-rejected";
 
   nodes.machine =
-    { pkgs, ... }:
+    { config, pkgs, ... }:
     let
-      signer-mod = pkgs.linuxPackages_latest.callPackage ./package.nix { };
+      signer-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
     in
     {
       boot.kernelPackages = pkgs.linuxPackages_latest;
@@ -17,5 +17,5 @@ testers.runNixOSTest {
       };
     };
 
-  testScript = lib.readFile ./test/rejection.py;
+  testScript = lib.readFile ./feature-lacking-kernel.py;
 }

@@ -1,7 +1,8 @@
 [package]
 name = "signer-app"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 libc = "0.2"
+pem = "3.0.6"

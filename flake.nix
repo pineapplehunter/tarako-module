@@ -27,12 +27,11 @@
             ];
           };
 
-          packages.default = pkgs.linuxPackages_latest.callPackage ./package.nix { };
-
+          packages.default = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
           packages.app = pkgs.callPackage ./app/package.nix { };
 
-          checks.nixos-test = pkgs.callPackage ./test.nix { };
-          checks.rejection-test = pkgs.callPackage ./rejection-test.nix { };
+          checks.attestation = pkgs.callPackage ./test/attestation.nix { };
+          checks.feature-lacking-kernel = pkgs.callPackage ./test/feature-lacking-kernel.nix { };
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [

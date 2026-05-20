@@ -10,23 +10,19 @@
 testers.runNixOSTest {
   name = "signer";
 
-  # cryptography is used by the test driver (host-side Python), not the VMs
-  extraPythonPackages = p: [ p.cryptography ];
-  skipTypeCheck = true;
-
   nodes = {
     attester =
       { config, pkgs, ... }:
       let
         # Build the kernel module against the running kernel
-        signer-mod = (config.boot.kernelPackages.callPackage ./package.nix { });
+        signer-mod = (config.boot.kernelPackages.callPackage ../driver/package.nix { });
         # Build the userspace signer-app binary
-        signer-app = pkgs.callPackage ./app/package.nix { };
+        signer-app = pkgs.callPackage ../app/package.nix { };
       in
       {
         imports = [
-          ./modules/fsverity.nix
-          ./modules/ima.nix
+          ../modules/fsverity.nix
+          ../modules/ima.nix
         ];
 
         custom.fsverity.enable = true;
@@ -58,5 +54,5 @@ testers.runNixOSTest {
       };
   };
 
-  testScript = lib.readFile ./test/test.py;
+  testScript = lib.readFile ./attestation.py;
 }
