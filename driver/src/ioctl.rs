@@ -97,7 +97,7 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
 
     if let Some(n) = ecc::get_curve_n() {
         pr_info!(
-            "Signer: curve N words ({:016x}{:016x}{:016x}{:016x})\n",
+            "curve N words ({:016x}{:016x}{:016x}{:016x})\n",
             n[0],
             n[1],
             n[2],
@@ -105,14 +105,14 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
         );
     }
     pr_info!(
-        "Signer: pubkey X words ({:016x}{:016x}{:016x}{:016x})\n",
+        "pubkey X words ({:016x}{:016x}{:016x}{:016x})\n",
         pub_x[0],
         pub_x[1],
         pub_x[2],
         pub_x[3]
     );
     pr_info!(
-        "Signer: pubkey Y words ({:016x}{:016x}{:016x}{:016x})\n",
+        "pubkey Y words ({:016x}{:016x}{:016x}{:016x})\n",
         pub_y[0],
         pub_y[1],
         pub_y[2],
@@ -128,14 +128,14 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
             hex[i * 2 + 1] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
         }
         pr_info!(
-            "Signer: pubkey hex ({})\n",
+            "pubkey hex ({})\n",
             core::str::from_utf8(&hex).unwrap_or("???")
         );
     }
 
     match ecc::ima_measure_pubkey(&pubkey_bytes) {
-        Ok(_) => pr_info!("Signer: Public key successfully logged in IMA\n"),
-        Err(e) => pr_err!("Signer: IMA measurement failed: {:?}\n", e),
+        Ok(_) => pr_info!("Public key successfully logged in IMA\n"),
+        Err(e) => pr_err!("IMA measurement failed: {:?}\n", e),
     };
 
     Ok(KeyPair {
@@ -230,7 +230,7 @@ pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
     let write_len = core::cmp::min(kp.pubkey.len(), buf_size);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
     writer.write_slice(&kp.pubkey[..write_len])?;
-    pr_info!("Signer: returned public key ({} bytes)\n", write_len);
+    pr_info!("returned public key ({} bytes)\n", write_len);
     Ok(write_len as isize)
 }
 
@@ -262,7 +262,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 
     write_sign_data_req(arg, buf_size, &req)?;
 
-    pr_info!("Signer: computed signature\n");
+    pr_info!("computed signature\n");
     Ok(0)
 }
 

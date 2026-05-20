@@ -61,15 +61,15 @@ struct SignerModule {
 
 impl kernel::InPlaceModule for SignerModule {
     fn init(_module: &'static ThisModule) -> impl PinInit<Self, Error> {
-        pr_info!("Signer: loading, generating ECDSA P-256 key pair\n");
+        pr_info!("loading, generating ECDSA P-256 key pair\n");
 
         match generate_key_pair() {
             Ok(kp) => {
                 KEY_PAIR.populate(kp);
-                pr_info!("Signer: key pair generated, public key ready\n");
+                pr_info!("key pair generated, public key ready\n");
             }
             Err(_) => {
-                pr_info!("Signer: failed to generate key pair\n");
+                pr_info!("failed to generate key pair\n");
             }
         }
 

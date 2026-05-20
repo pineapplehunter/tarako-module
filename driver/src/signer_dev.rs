@@ -21,7 +21,7 @@ impl MiscDevice for SignerDevice {
 
     fn open(_file: &File, misc: &MiscDeviceRegistration<Self>) -> Result<Pin<KBox<Self>>> {
         let dev = ARef::from(misc.device());
-        pr_info!("Signer: opened\n");
+        pr_info!("opened\n");
         KBox::try_pin_init(try_pin_init! { SignerDevice { dev: dev } }, GFP_KERNEL)
     }
 
@@ -33,13 +33,13 @@ impl MiscDevice for SignerDevice {
 
         match cmd {
             ioctl::SIGNER_HELLO => {
-                pr_info!("Signer: hello from ioctl\n");
+                pr_info!("hello from ioctl\n");
                 Ok(0)
             }
             ioctl::SIGNER_GET_PUBKEY => ioctl::handle_get_pubkey(arg, cmd),
             ioctl::SIGNER_SIGN_DATA => ioctl::handle_sign_data(arg, cmd),
             _ => {
-                pr_info!("Signer: unknown ioctl 0x{:x}\n", cmd);
+                pr_info!("unknown ioctl 0x{:x}\n", cmd);
                 Err(ENOTTY)
             }
         }
@@ -49,6 +49,6 @@ impl MiscDevice for SignerDevice {
 #[pinned_drop]
 impl PinnedDrop for SignerDevice {
     fn drop(self: Pin<&mut Self>) {
-        pr_info!("Signer: goodbye!\n");
+        pr_info!("goodbye!\n");
     }
 }

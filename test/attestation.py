@@ -26,8 +26,8 @@ for line in dmesg.split("\n"):
     if "Signer:" in line:
         print(line)
 
-assert "Signer: loading" in dmesg
-assert "Signer: key pair generated" in dmesg
+assert "loading, generating ECDSA P-256 key pair" in dmesg
+assert "key pair generated, public key ready" in dmesg
 
 # Set up fs-verity protected binary on attester.
 # The kernel module rejects ioctls from non-verity processes, so signer-app

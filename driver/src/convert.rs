@@ -37,7 +37,7 @@ pub(crate) fn digits_to_be_bytes(digits: &[u64; DIGITS]) -> [u8; BYTES] {
         core::ptr::copy_nonoverlapping(digits.as_ptr() as *const u8, out.as_mut_ptr(), BYTES);
     }
     pr_info!(
-        "Signer: raw words {:016x}{:016x}{:016x}{:016x}\n",
+        "raw words {:016x}{:016x}{:016x}{:016x}\n",
         digits[0],
         digits[1],
         digits[2],
