@@ -1,11 +1,3 @@
-# NixOS VM integration test for the signer kernel module.
-#
-# Two-machine remote attestation scenario:
-#   - attester: runs the signer kernel module, exposes a TCP responder on port
-#               9999 that accepts a nonce and returns an ECDSA signature.
-#   - verifier: sends a random nonce over the network and receives the response.
-#
-# The test driver (host) cryptographically verifies the result.
 { lib, testers }:
 testers.runNixOSTest {
   name = "signer";
@@ -14,10 +6,12 @@ testers.runNixOSTest {
     attester =
       { config, pkgs, ... }:
       let
-        # Build the kernel module against the running kernel
-        signer-mod = (config.boot.kernelPackages.callPackage ../driver/package.nix { });
-        # Build the userspace signer-app binary
+        signer-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
         signer-app = pkgs.pkgsStatic.callPackage ../app/package.nix { };
+
+        signer-responder = pkgs.writers.writePython3Bin "signer-responder" {
+          libraries = [ pkgs.python3Packages.flask ];
+        } ./responder.py;
       in
       {
         imports = [
@@ -30,15 +24,16 @@ testers.runNixOSTest {
 
         boot.kernelPackages = pkgs.linuxPackages_latest;
         boot.extraModulePackages = [ signer-mod ];
-        boot.kernelModules = [ "signer" ];
+        boot.kernelParams = [ "ima_policy=critical_data" ];
+        # signer is loaded manually in the test after IMA policy is set
         environment.systemPackages = [
-          signer-app # /mnt/signer-app — the fs-verity protected binary
+          signer-app
+          signer-responder
           pkgs.openssl
-          pkgs.python3 # for the TCP responder
+          pkgs.python3
         ];
 
-        # The TCP responder listens on 9999 for nonces from the verifier
-        networking.firewall.allowedTCPPorts = [ 9999 ];
+        networking.firewall.allowedTCPPorts = [ 5000 ];
 
         virtualisation = {
           tpm.enable = true;
@@ -46,11 +41,15 @@ testers.runNixOSTest {
         };
       };
 
-    # Verifier only needs Python to send the nonce over TCP
     verifier =
       { pkgs, ... }:
+      let
+        signer-client = pkgs.writers.writePython3Bin "signer-client" {
+          libraries = [ pkgs.python3Packages.requests ];
+        } (builtins.readFile ./client.py);
+      in
       {
-        environment.systemPackages = [ pkgs.python3 ];
+        environment.systemPackages = [ signer-client ];
       };
   };
 

@@ -12,22 +12,31 @@
 #   5. Test driver verifies:
 #      - The nonce in the response matches what was sent.
 #      - The ECDSA signature verifies against the public key via openssl.
-import os, binascii, hashlib, time, base64
-
-start_all()
+import os, binascii, hashlib, base64
 
 # ===== Phase 1: Attester setup =====
 attester.wait_for_unit("default.target")
-attester.succeed("modprobe ecc")
+
+attester.succeed("modprobe ecc 2>/dev/null || true")
 attester.succeed("modprobe signer")
 
 dmesg = attester.succeed("dmesg")
 for line in dmesg.split("\n"):
-    if "Signer:" in line:
+    if "loading, generating ECDSA P-256 key pair" in line or "key pair generated, public key ready" in line:
         print(line)
 
 assert "loading, generating ECDSA P-256 key pair" in dmesg
 assert "key pair generated, public key ready" in dmesg
+
+# Verify the public key was recorded in the IMA measurement log.
+import time
+time.sleep(1)
+ima_log = attester.succeed("cat /sys/kernel/security/integrity/ima/ascii_runtime_measurements")
+print("IMA log:")
+for line in ima_log.strip().split("\n"):
+    print("  " + line)
+assert "public-key-generate" in ima_log, "public-key-generate event not found in IMA log"
+print("IMA log contains public key measurement")
 
 # Set up fs-verity protected binary on attester.
 # The kernel module rejects ioctls from non-verity processes, so signer-app
@@ -42,77 +51,21 @@ fsverity_out = attester.succeed("fsverity measure /mnt/signer-app")
 fsverity_digest_hex = fsverity_out.strip().split()[0].split(":")[1]
 print("fs-verity digest hex:", fsverity_digest_hex)
 
-# Start TCP responder on attester.
-# Protocol: reads a hex nonce line, runs signer-app, sends back the full output.
-responder_code = r"""
-import socket, subprocess
+# Start TCP responder on attester (background).
+attester.succeed("nohup signer-responder > /tmp/responder.log 2>&1 &")
 
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('0.0.0.0', 9999))
-s.listen(5)
-
-while True:
-    conn, addr = s.accept()
-    data = b''
-    while True:
-        ch = conn.recv(1)
-        if ch == b'\n' or not ch:
-            break
-        data += ch
-    nonce_hex = data.decode()
-    result = subprocess.check_output(['/mnt/signer-app', nonce_hex])
-    conn.sendall(result)
-    conn.close()
-"""
-
-b64 = base64.b64encode(responder_code.encode()).decode()
-attester.succeed(f"echo {b64} | base64 -d > /tmp/responder.py")
-attester.succeed("nohup python3 /tmp/responder.py > /tmp/responder.log 2>&1 &")
-time.sleep(1)
-
-# Get attester's eth1 (inter-machine network) IP
-attester_ip = attester.succeed("ip -4 addr show eth1 | grep -oP '(?<=inet )\\S+' | cut -d/ -f1").strip()
-print("attester IP:", attester_ip)
+# Attester is reachable by its node name in the VM network
+attester_ip = "attester"
+print("attester hostname:", attester_ip)
 
 # ===== Phase 2: Remote attestation =====
 # Verifier generates a random nonce and sends it over the network.
-
-verifier.wait_for_unit("default.target")
 
 nonce = os.urandom(32)
 nonce_hex = binascii.hexlify(nonce).decode()
 print("verifier nonce:", nonce_hex)
 
-client_code = f"""
-import socket, time
-for attempt in range(5):
-    try:
-        s = socket.socket()
-        s.settimeout(5)
-        s.connect(('{attester_ip}', 9999))
-        s.sendall(b'{nonce_hex}' + b'\\x0a')
-        data = b''
-        while True:
-            try:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-            except:
-                break
-        s.close()
-        print(data.decode())
-        break
-    except Exception as e:
-        if attempt < 4:
-            time.sleep(1)
-        else:
-            raise
-"""
-
-client_b64 = base64.b64encode(client_code.encode()).decode()
-out = verifier.succeed(f"echo {client_b64} | base64 -d | python3")
+out = verifier.succeed(f"signer-client {attester_ip} {nonce_hex}")
 print(out)
 
 # ===== Phase 3: Cryptographic verification via openssl =====
