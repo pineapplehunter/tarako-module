@@ -121,15 +121,31 @@ impl<const N: usize> Vli<N> {
     }
 }
 
-// ── Clone / Copy ──
+// ── Zeroize on drop ──
+
+impl<const N: usize> Drop for Vli<N> {
+    fn drop(&mut self) {
+        for limb in self.0.iter_mut() {
+            unsafe { core::ptr::write_volatile(limb, 0) };
+        }
+    }
+}
+
+impl<const N: usize> Vli<N> {
+    pub(crate) fn zeroize(&mut self) {
+        for limb in self.0.iter_mut() {
+            unsafe { core::ptr::write_volatile(limb, 0) };
+        }
+    }
+}
+
+// ── Clone (NOT Copy) ──
 
 impl<const N: usize> Clone for Vli<N> {
     fn clone(&self) -> Self {
         Vli(self.0)
     }
 }
-
-impl<const N: usize> Copy for Vli<N> {}
 
 // ── Deref ──
 
@@ -171,6 +187,26 @@ impl<const N: usize> Ord for Vli<N> {
 impl<const N: usize> PartialOrd for Vli<N> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl<const N: usize> PartialOrd<&Self> for Vli<N> {
+    fn partial_cmp(&self, other: &&Self) -> Option<Ordering> {
+        Some(self.cmp(*other))
+    }
+}
+
+impl<const N: usize> PartialEq<&Self> for Vli<N> {
+    fn eq(&self, other: &&Self) -> bool {
+        self.cmp(*other) == Ordering::Equal
+    }
+}
+
+impl<const N: usize> core::ops::Sub<&Self> for Vli<N> {
+    type Output = Self;
+    fn sub(self, rhs: &Self) -> Self {
+        let (result, _) = self.sub_with_borrow(rhs);
+        result
     }
 }
 

@@ -63,20 +63,6 @@ fn pubkey_der(pubkey: &[u8; 65]) -> Vec<u8> {
     buf
 }
 
-// Convert kernel's LE-limb u64 format to big-endian bytes.
-fn le_limbs_to_be(raw: &[u8; 32]) -> [u8; 32] {
-    let mut be = [0u8; 32];
-    for i in 0..4 {
-        let limb = u64::from_le_bytes(raw[(3 - i) * 8..(4 - i) * 8].try_into().unwrap());
-        be[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_be_bytes());
-    }
-    be
-}
-
-fn le_limbs_to_be_hex(raw: &[u8; 32]) -> String {
-    hex(&le_limbs_to_be(raw))
-}
-
 fn sig_der(sig_r: &[u8; 32], sig_s: &[u8; 32]) -> Vec<u8> {
     let r = UintRef::new(sig_r).unwrap();
     let s = UintRef::new(sig_s).unwrap();
@@ -170,10 +156,8 @@ fn main() {
     println!("nonce: {}", hex(&req.nonce));
     println!("hash: {}", hex(&req.hash));
     // Kernel returns raw LE-limb bytes; convert to big-endian hex for display
-    println!("sig_r: {}", le_limbs_to_be_hex(&req.sig_r));
-    println!("sig_s: {}", le_limbs_to_be_hex(&req.sig_s));
-    let sig_r_be = le_limbs_to_be(&req.sig_r);
-    let sig_s_be = le_limbs_to_be(&req.sig_s);
+    println!("sig_r: {}", hex(&req.sig_r));
+    println!("sig_s: {}", hex(&req.sig_s));
     println!("signature DER:");
-    println!("{}", hex(&sig_der(&sig_r_be, &sig_s_be)));
+    println!("{}", hex(&sig_der(&req.sig_r, &req.sig_s)));
 }

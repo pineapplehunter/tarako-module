@@ -66,21 +66,19 @@ impl kernel::InPlaceModule for SignerModule {
     fn init(_module: &'static ThisModule) -> impl PinInit<Self, Error> {
         pr_info!("loading, generating ECDSA P-256 key pair\n");
 
-        match generate_key_pair() {
-            Ok(kp) => {
-                KEY_PAIR.populate(kp);
-                pr_info!("key pair generated, public key ready\n");
-            }
-            Err(_) => {
-                pr_info!("failed to generate key pair\n");
-            }
-        }
-
         let options = MiscDeviceOptions {
             name: kernel::c_str!("signer"),
         };
         try_pin_init!(Self {
-            _miscdev <- MiscDeviceRegistration::register(options),
+            _miscdev <- {
+                let kp = generate_key_pair().map_err(|_| {
+                    pr_err!("failed to generate ECDSA key pair, aborting load\n");
+                    EINVAL
+                })?;
+                KEY_PAIR.populate(kp);
+                pr_info!("key pair generated, public key ready\n");
+                MiscDeviceRegistration::register(options)
+            },
         })
     }
 }

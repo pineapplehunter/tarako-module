@@ -9,21 +9,21 @@ A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it
 │  Verifier   │ ──────────────────► │  Attester    │
 │ (challenger)│                     │ (kernel mod) │
 │             │ ◄────────────────── │              │
-│             │  cert + sig + pubkey│  /dev/signer │
+│             │  sig + pubkey       │  /dev/signer │
 └─────────────┘                     └──────────────┘
 ```
 
 **Attester** (runs the kernel module):
-1. Loads `ecc` + `signer` modules — key pair is generated and a self-signed X.509 certificate is built in kernel space.
-2. The private key never leaves the kernel.
+1. Loads `signer` module — ECDSA P-256 key pair is generated in kernel space.
+2. The private key never leaves the kernel and is zeroized on module unload.
 3. A TCP responder accepts nonces from the network, calls `SIGNER_SIGN_DATA`, and returns the signature.
 
-**Kernel module (`src/lib.rs`)** — three ioctls:
+**Kernel module (`driver/src/`)** — three ioctls:
 
 | Ioctl | Code | Description |
 |-------|------|-------------|
 | `SIGNER_HELLO` | `0x0000_5300` | Sanity check |
-| `SIGNER_GET_CERT` | `0x8800_5301` | Return the self-signed certificate |
+| `SIGNER_GET_PUBKEY` | `0x8041_5301` | Return the raw ECDSA P-256 public key (65 bytes) |
 | `SIGNER_SIGN_DATA` | `0xC0C1_5302` | Sign `SHA256(fsverity_digest \|\| nonce)` with ECDSA P-256 |
 
 All ioctls are guarded: only processes whose executable is protected by **fs-verity** may call them. This ensures the measured code path is authentic.
@@ -32,23 +32,26 @@ All ioctls are guarded: only processes whose executable is protected by **fs-ver
 
 | Path | Role |
 |------|------|
-| `src/lib.rs` | Kernel module (Rust, `rust/kernel` framework) |
+| `driver/src/` | Kernel module (Rust, `rust/kernel` framework) — multi-file layout |
 | `app/src/main.rs` | Userspace `signer-app` — opens `/dev/signer` and issues ioctls |
-| `test/test.py` | Two-machine NixOS VM integration test |
-| `test.nix` | NixOS test definition |
+| `test/attestation.py` | Two-machine NixOS VM integration test |
+| `test/feature-lacking-kernel.py` | Verifies module loads on kernels without fs-verity |
 | `modules/` | NixOS modules enabling `FS_VERITY` and `IMA` kernel config |
 
 ## Build & Test
 
 ```sh
-# Kernel module only
-nix build .#kernel-module
-
-# Userspace app
+# Kernel module
 nix build .#default
 
-# Full NixOS VM integration test (remote attestation)
-nix build .#checks.x86_64-linux.nixos-test
+# Userspace app
+nix build .#app
+
+# NixOS VM attestation test
+nix build .#checks.x86_64-linux.attestation
+
+# Feature-lacking kernel test
+nix build .#checks.x86_64-linux.feature-lacking-kernel
 
 # Dev shell with Rust + rust-src
 nix develop
@@ -60,18 +63,22 @@ The integration test creates two VMs:
 
 ## How the signing works
 
-1. On load, the module generates an ECDSA P-256 key pair and a self-signed X.509 certificate.
+1. On load, the module generates an ECDSA P-256 key pair. The curve order `n` is cached.
 2. When `SIGNER_SIGN_DATA` is called, the kernel:
-   - Reads the calling process's fs-verity digest (SHA-256 of the file's Merkle tree root).
+   - Reads the calling process's fs-verity digest (SHA-256 of the file's Merkle tree root) using `get_task_exe_file`.
    - Concatenates it with the 32-byte nonce from userspace.
-   - Computes `SHA256(digest || nonce)`.
-   - Signs the result with ECDSA P-256 using `ecc_gen_privkey`, `ecc_make_pub_key`, `vli_mod_inv`, and `vli_mod_mult_slow`.
-
-The internal limb format of the kernel's ECC helpers is LE-limb (native u64 on x86_64), but `ecc_make_pub_key` applies `ecc_swap_digits` to its output, producing a big-endian memory image. The module handles vli conversion via `unswap_digits`. Byte-order conversion for the ioctl response (`sig_r`/`sig_s`) is done in **userspace** — the kernel returns raw LE-limb bytes and the app converts to big-endian hex for display.
+   - Computes `SHA256(digest || nonce)` and reduces it modulo `n`.
+   - Signs the result with ECDSA P-256 using kernel `ecc_*` helpers.
+   - Returns the signature in big-endian wire format and the uncompressed public key.
 
 ## Key files
 
-- `src/lib.rs` — kernel module (single file, ~850 lines)
+- `driver/src/lib.rs` — module entry point and key pair lifecycle
+- `driver/src/ioctl.rs` — ioctl handlers, ECDSA signing, fs-verity helper
+- `driver/src/vli.rs` — variable-length integer type (LE limbs), zeroized on drop
+- `driver/src/ecc.rs` — safe wrappers around kernel ECC/crypto helpers
+- `driver/src/ffi.rs` — FFI declarations for kernel C functions
+- `driver/src/convert.rs` — byte-order conversion and public key format
+- `driver/src/set_once.rs` — atomic once-only cell for global key storage
 - `app/src/main.rs` — userspace ioctl client
-- `test/test.py` — NixOS test script
 - `AGENTS.md` — developer reference for common commands

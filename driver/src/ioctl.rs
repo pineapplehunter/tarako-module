@@ -6,15 +6,23 @@
 use crate::convert;
 use crate::ecc;
 use crate::ffi;
+use crate::set_once::SetOnce;
 use crate::vli::Scalar;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
 use kernel::prelude::*;
 use kernel::sync::rcu;
 use kernel::uaccess::{UserPtr, UserSlice};
 
+#[cfg(target_endian = "big")]
+compile_error!("signer module requires little-endian target");
+
 const DIGITS: usize = ecc::P256_DIGITS as usize;
 const BYTES: usize = ecc::P256_BYTES as usize;
 const PUBKEY_BYTES: usize = ecc::P256_PUBKEY_BYTES;
+
+const _: () = assert!(PUBKEY_BYTES == 1 + 2 * BYTES);
+
+pub(crate) static CURVE_N: SetOnce<Scalar> = SetOnce::new();
 
 // ioctl command numbers: type 'S' (0x53), sequence 0..2
 pub(crate) const SIGNER_HELLO: u32 = _IO('S' as u32, 0x00);
@@ -36,10 +44,10 @@ pub(crate) struct KeyPair {
 }
 
 pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scalar)> {
-    let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
+    let curve_n = CURVE_N.as_ref().ok_or(EINVAL)?;
     let data_hash = ecc::sha256_hash(data);
 
-    loop {
+    for _ in 0..100 {
         let k = ecc::generate_private_key()?;
         let pubk = ecc::make_public_key(&k)?;
 
@@ -54,8 +62,11 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
             continue;
         }
 
-        let z = Scalar::from_be_bytes(&data_hash);
-        let s = r.mod_mult(privkey, &curve_n);
+        let mut z = Scalar::from_be_bytes(&data_hash);
+        if z >= curve_n {
+            z = z - curve_n;
+        }
+        let s = r.mod_mult(privkey, curve_n);
 
         let (z_plus_rs, carry) = z.carrying_add(&s, 0);
         let z_plus_rs = if carry != 0 || z_plus_rs >= curve_n {
@@ -64,8 +75,8 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
             z_plus_rs
         };
 
-        let k_inv = k.mod_inv(&curve_n);
-        let s = z_plus_rs.mod_mult(&k_inv, &curve_n);
+        let k_inv = k.mod_inv(curve_n);
+        let s = z_plus_rs.mod_mult(&k_inv, curve_n);
 
         if s.is_zero() {
             continue;
@@ -73,6 +84,8 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
 
         return Ok((r, s));
     }
+
+    Err(EINVAL)
 }
 
 pub(crate) fn generate_key_pair() -> Result<KeyPair> {
@@ -87,6 +100,9 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
         Ok(_) => pr_info!("Public key successfully logged in IMA\n"),
         Err(e) => pr_err!("IMA measurement failed: {:?}\n", e),
     };
+
+    let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
+    CURVE_N.populate(curve_n);
 
     Ok(KeyPair { private, pubkey })
 }
@@ -112,19 +128,22 @@ fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
     if mm_ptr.is_null() {
         return Err(EPERM);
     }
-    let _guard = rcu::read_lock();
+    let _guard = kernel::sync::rcu::read_lock();
     let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
     if exe_file.is_null() {
         return Err(EPERM);
     }
-    let inode = unsafe { (*exe_file).f_inode as *mut u8 };
+    let inode = unsafe { (*exe_file).f_inode as *mut kernel::bindings::inode };
+    if inode.is_null() {
+        return Err(EPERM);
+    }
     let mut digest = FsverityDigest {
         size: 0,
         buffer: [0; FS_VERITY_MAX_DIGEST_SIZE],
     };
     let ret = unsafe {
         ffi::fsverity_get_digest(
-            inode,
+            inode as *mut core::ffi::c_void,
             digest.buffer.as_mut_ptr(),
             core::ptr::null_mut(),
             core::ptr::null_mut(),
@@ -172,13 +191,15 @@ fn write_sign_data_req(arg: usize, buf_size: usize, req: &SignDataReq) -> Result
 
 pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
     let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
-    let ptr = UserPtr::from_addr(arg);
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
-    let write_len = core::cmp::min(kp.pubkey.as_bytes().len(), buf_size);
+    if buf_size < PUBKEY_BYTES {
+        return Err(E2BIG);
+    }
+    let ptr = UserPtr::from_addr(arg);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
-    writer.write_slice(&kp.pubkey.as_bytes()[..write_len])?;
-    pr_info!("returned public key ({} bytes)\n", write_len);
-    Ok(write_len as isize)
+    writer.write_slice(kp.pubkey.as_bytes())?;
+    pr_info!("returned public key ({} bytes)\n", PUBKEY_BYTES);
+    Ok(PUBKEY_BYTES as isize)
 }
 
 pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
@@ -188,7 +209,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
     let digest = digest.digest();
 
     let mut req = read_sign_data_req(arg, buf_size)?;
-    let to_sign_len = digest.len() + BYTES;
+    let to_sign_len = digest.len().checked_add(BYTES).ok_or(EINVAL)?;
     let mut to_sign = [0u8; FS_VERITY_MAX_DIGEST_SIZE + BYTES];
     to_sign[..digest.len()].copy_from_slice(&digest);
     to_sign[digest.len()..to_sign_len].copy_from_slice(&req.nonce);
@@ -197,13 +218,13 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 
     let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let (sig_r_limbs, sig_s_limbs) = ecdsa_sign(&to_sign[..to_sign_len], &kp.private)?;
-    for (i, limb) in sig_r_limbs.iter().enumerate() {
+    for (i, limb) in sig_r_limbs.iter().rev().enumerate() {
         req.sig_r[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
-            .copy_from_slice(&limb.to_ne_bytes());
+            .copy_from_slice(&limb.to_be_bytes());
     }
-    for (i, limb) in sig_s_limbs.iter().enumerate() {
+    for (i, limb) in sig_s_limbs.iter().rev().enumerate() {
         req.sig_s[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
-            .copy_from_slice(&limb.to_ne_bytes());
+            .copy_from_slice(&limb.to_be_bytes());
     }
     req.pubkey.copy_from_slice(kp.pubkey.as_bytes());
 

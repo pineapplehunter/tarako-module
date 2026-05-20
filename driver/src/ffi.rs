@@ -68,7 +68,7 @@ extern "C" {
     ) -> c_int;
     // Get fs-verity digest for an inode (fs/verity/measure.c:86)
     pub(crate) fn fsverity_get_digest(
-        inode: *mut u8,
+        inode: *mut core::ffi::c_void,
         raw_digest: *mut u8,
         alg: *mut u8,
         halg: *mut u32,
