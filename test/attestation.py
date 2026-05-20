@@ -14,6 +14,8 @@
 #      - The ECDSA signature verifies against the public key via openssl.
 import os, binascii, hashlib, base64
 
+start_all()
+
 # ===== Phase 1: Attester setup =====
 attester.wait_for_unit("default.target")
 
@@ -28,7 +30,8 @@ for line in dmesg.split("\n"):
 assert "loading, generating ECDSA P-256 key pair" in dmesg
 assert "key pair generated, public key ready" in dmesg
 
-# Verify the public key was recorded in the IMA measurement log.
+# Verify the public key was recorded in the IMA measurement log and
+# that the recorded digest matches SHA256 of the raw public key bytes.
 import time
 time.sleep(1)
 ima_log = attester.succeed("cat /sys/kernel/security/integrity/ima/ascii_runtime_measurements")
@@ -36,7 +39,17 @@ print("IMA log:")
 for line in ima_log.strip().split("\n"):
     print("  " + line)
 assert "public-key-generate" in ima_log, "public-key-generate event not found in IMA log"
-print("IMA log contains public key measurement")
+
+pkg_line = next(line for line in ima_log.strip().split("\n") if "public-key-generate" in line)
+parts = pkg_line.split()
+# Format: PCR template_hash template algo:digest event_name event_data
+ima_digest_full = parts[3]
+ima_digest_hex = ima_digest_full.split(":")[1]
+event_data_idx = parts.index("public-key-generate") + 1
+raw_pubkey_hex = parts[event_data_idx]
+ref_digest = hashlib.sha256(bytes.fromhex(raw_pubkey_hex)).hexdigest()
+assert ima_digest_hex == ref_digest, f"IMA digest mismatch: {ima_digest_hex} != {ref_digest}"
+print("IMA digest matches SHA256 of the raw public key")
 
 # Set up fs-verity protected binary on attester.
 # The kernel module rejects ioctls from non-verity processes, so signer-app
