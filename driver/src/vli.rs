@@ -4,7 +4,7 @@
 
 use crate::ffi;
 use core::cmp::Ordering;
-use core::ffi::c_uint;
+use core::ffi::{c_int, c_uint};
 use core::ops::{Add, Sub};
 
 /// P-256 scalar / coordinate (4 limbs, 256 bits).
@@ -38,7 +38,7 @@ impl<const N: usize> Vli<N> {
     }
 
     pub(crate) fn is_zero(&self) -> bool {
-        self.0.iter().all(|&l| l == 0)
+        unsafe { ffi::vli_is_zero(self.as_ptr(), N as c_uint) }
     }
 
     /// Add `right` with an initial `carry`, returning (sum, overflow).
@@ -55,15 +55,16 @@ impl<const N: usize> Vli<N> {
 
     /// Subtract `right` returning (difference, borrow).
     pub(crate) fn sub_with_borrow(&self, right: &Self) -> (Self, u64) {
-        let mut limbs = [0u64; N];
-        let mut borrow = 0u64;
-        for i in 0..N {
-            let (s, c1) = self.0[i].overflowing_sub(right.0[i]);
-            let (s, c2) = s.overflowing_sub(borrow);
-            limbs[i] = s;
-            borrow = (c1 as u64) + (c2 as u64);
-        }
-        (Vli(limbs), borrow)
+        let mut result = Vli::zero();
+        let borrow = unsafe {
+            ffi::vli_sub(
+                result.as_mut_ptr(),
+                self.as_ptr(),
+                right.as_ptr(),
+                N as c_uint,
+            )
+        };
+        (result, borrow)
     }
 
     /// Reverse ecc_swap_digits: convert BE limb order back to LE.
@@ -131,14 +132,6 @@ impl<const N: usize> Drop for Vli<N> {
     }
 }
 
-impl<const N: usize> Vli<N> {
-    pub(crate) fn zeroize(&mut self) {
-        for limb in self.0.iter_mut() {
-            unsafe { core::ptr::write_volatile(limb, 0) };
-        }
-    }
-}
-
 // ── Clone (NOT Copy) ──
 
 impl<const N: usize> Clone for Vli<N> {
@@ -165,9 +158,24 @@ impl<const N: usize> core::ops::DerefMut for Vli<N> {
 
 // ── Equality / Ordering ──
 
+fn vli_cmp_to_ordering(r: c_int) -> Ordering {
+    match r {
+        0 => Ordering::Equal,
+        r if r < 0 => Ordering::Less,
+        _ => Ordering::Greater,
+    }
+}
+
+impl<const N: usize> Vli<N> {
+    fn cmp_ffi(&self, other: &Self) -> Ordering {
+        let r = unsafe { ffi::vli_cmp(self.as_ptr(), other.as_ptr(), N as c_uint) };
+        vli_cmp_to_ordering(r)
+    }
+}
+
 impl<const N: usize> PartialEq for Vli<N> {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.cmp_ffi(other) == Ordering::Equal
     }
 }
 
@@ -175,30 +183,25 @@ impl<const N: usize> Eq for Vli<N> {}
 
 impl<const N: usize> Ord for Vli<N> {
     fn cmp(&self, other: &Self) -> Ordering {
-        for i in (0..N).rev() {
-            if self.0[i] != other.0[i] {
-                return self.0[i].cmp(&other.0[i]);
-            }
-        }
-        Ordering::Equal
+        self.cmp_ffi(other)
     }
 }
 
 impl<const N: usize> PartialOrd for Vli<N> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+        Some(self.cmp_ffi(other))
     }
 }
 
 impl<const N: usize> PartialOrd<&Self> for Vli<N> {
     fn partial_cmp(&self, other: &&Self) -> Option<Ordering> {
-        Some(self.cmp(*other))
+        Some(self.cmp_ffi(*other))
     }
 }
 
 impl<const N: usize> PartialEq<&Self> for Vli<N> {
     fn eq(&self, other: &&Self) -> bool {
-        self.cmp(*other) == Ordering::Equal
+        self.cmp_ffi(*other) == Ordering::Equal
     }
 }
 

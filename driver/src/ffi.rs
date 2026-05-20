@@ -54,6 +54,17 @@ extern "C" {
         modulus: *const u64,
         ndigits: c_uint,
     );
+    // Compare two VLIs: -1 / 0 / +1 (crypto/ecc.c:233)
+    pub(crate) fn vli_cmp(left: *const u64, right: *const u64, ndigits: c_uint) -> c_int;
+    // VLI subtraction: result = left - right, returns borrow (crypto/ecc.c:325)
+    pub(crate) fn vli_sub(
+        result: *mut u64,
+        left: *const u64,
+        right: *const u64,
+        ndigits: c_uint,
+    ) -> u64;
+    // Check if all digits are zero (crypto/ecc.c:146)
+    pub(crate) fn vli_is_zero(vli: *const u64, ndigits: c_uint) -> bool;
     // SHA-256 hash (lib/crypto/sha256.c:262)
     pub(crate) fn sha256(data: *const u8, len: c_ulong, out: *mut u8);
     // Log a critical data measurement to IMA (security/integrity/ima/ima_main.c:1209)

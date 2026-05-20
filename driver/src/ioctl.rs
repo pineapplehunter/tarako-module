@@ -10,7 +10,6 @@ use crate::set_once::SetOnce;
 use crate::vli::Scalar;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
 use kernel::prelude::*;
-use kernel::sync::rcu;
 use kernel::uaccess::{UserPtr, UserSlice};
 
 #[cfg(target_endian = "big")]
