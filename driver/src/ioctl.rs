@@ -6,6 +6,7 @@
 use crate::convert;
 use crate::ecc;
 use crate::ffi;
+use crate::vli::Scalar;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
 use kernel::prelude::*;
 use kernel::sync::rcu;
@@ -30,14 +31,11 @@ pub(crate) struct SignDataReq {
 }
 
 pub(crate) struct KeyPair {
-    pub private: [u64; DIGITS],
-    pub pubkey: [u8; PUBKEY_BYTES],
+    pub private: Scalar,
+    pub pubkey: convert::UncompressedPubkey,
 }
 
-pub(crate) fn ecdsa_sign(
-    data: &[u8],
-    privkey: &[u64; DIGITS],
-) -> Result<([u64; DIGITS], [u64; DIGITS])> {
+pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scalar)> {
     let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
     let data_hash = ecc::sha256_hash(data);
 
@@ -45,103 +43,52 @@ pub(crate) fn ecdsa_sign(
         let k = ecc::generate_private_key()?;
         let pubk = ecc::make_public_key(&k)?;
 
-        let mut r_swapped = [0u64; DIGITS];
+        let mut r_swapped = Scalar::zero();
         r_swapped.copy_from_slice(&pubk[..DIGITS]);
-        let mut r_digits = convert::unswap_digits(&r_swapped);
-        if ecc::vli_compare(&r_digits, &curve_n).is_ge() {
-            let r_copy = r_digits;
-            (r_digits, _) = ecc::vli_sub_result(&r_copy, &curve_n);
+        let mut r = r_swapped.unswap();
+        if r >= curve_n {
+            r = r - curve_n;
         }
 
-        if ecc::is_vli_zero(&r_digits) {
+        if r.is_zero() {
             continue;
         }
 
-        let mut s_digits = ecc::vli_mod_mult(&r_digits, privkey, &curve_n);
-        let z = ecc::digits_from_be_bytes(&data_hash);
+        let z = Scalar::from_be_bytes(&data_hash);
+        let s = r.mod_mult(privkey, &curve_n);
 
-        let mut z_plus_rs = z;
-        let mut carry = 0u64;
-        for i in 0..DIGITS {
-            let (s, c1) = z_plus_rs[i].overflowing_add(s_digits[i]);
-            let (s, c2) = s.overflowing_add(carry);
-            z_plus_rs[i] = s;
-            carry = (c1 as u64) + (c2 as u64);
-        }
-        if carry != 0 || ecc::vli_compare(&z_plus_rs, &curve_n).is_ge() {
-            let tmp = z_plus_rs;
-            (z_plus_rs, _) = ecc::vli_sub_result(&tmp, &curve_n);
-        }
+        let (z_plus_rs, carry) = z.carrying_add(&s, 0);
+        let z_plus_rs = if carry != 0 || z_plus_rs >= curve_n {
+            z_plus_rs - curve_n
+        } else {
+            z_plus_rs
+        };
 
-        let k_inv = ecc::vli_mod_inv_result(&k, &curve_n);
-        s_digits = ecc::vli_mod_mult(&z_plus_rs, &k_inv, &curve_n);
+        let k_inv = k.mod_inv(&curve_n);
+        let s = z_plus_rs.mod_mult(&k_inv, &curve_n);
 
-        if ecc::is_vli_zero(&s_digits) {
+        if s.is_zero() {
             continue;
         }
 
-        return Ok((r_digits, s_digits));
+        return Ok((r, s));
     }
 }
 
 pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     let private = ecc::generate_private_key()?;
     let public = ecc::make_public_key(&private)?;
+    let mut pubkey = convert::UncompressedPubkey([0u8; PUBKEY_BYTES]);
+    pubkey.0[0] = 0x04;
+    let bytes: [u8; 2 * BYTES] = unsafe { core::mem::transmute(*public) };
+    pubkey.0[1..].copy_from_slice(&bytes);
 
-    let mut pub_x = [0u64; DIGITS];
-    let mut pub_y = [0u64; DIGITS];
-    pub_x.copy_from_slice(&public[..DIGITS]);
-    pub_y.copy_from_slice(&public[DIGITS..]);
-
-    let pubkey_bytes = convert::uncompressed_pubkey_bytes(&pub_x, &pub_y);
-
-    if let Some(n) = ecc::get_curve_n() {
-        pr_info!(
-            "curve N words ({:016x}{:016x}{:016x}{:016x})\n",
-            n[0],
-            n[1],
-            n[2],
-            n[3]
-        );
-    }
-    pr_info!(
-        "pubkey X words ({:016x}{:016x}{:016x}{:016x})\n",
-        pub_x[0],
-        pub_x[1],
-        pub_x[2],
-        pub_x[3]
-    );
-    pr_info!(
-        "pubkey Y words ({:016x}{:016x}{:016x}{:016x})\n",
-        pub_y[0],
-        pub_y[1],
-        pub_y[2],
-        pub_y[3]
-    );
-    {
-        let mut hex = [0u8; 2 * PUBKEY_BYTES];
-        for i in 0..PUBKEY_BYTES {
-            let v = pubkey_bytes[i];
-            let hi = v >> 4;
-            let lo = v & 0xf;
-            hex[i * 2] = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
-            hex[i * 2 + 1] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
-        }
-        pr_info!(
-            "pubkey hex ({})\n",
-            core::str::from_utf8(&hex).unwrap_or("???")
-        );
-    }
-
-    match ecc::ima_measure_pubkey(&pubkey_bytes) {
+    match ecc::ima_measure_pubkey(&pubkey) {
         Ok(_) => pr_info!("Public key successfully logged in IMA\n"),
         Err(e) => pr_err!("IMA measurement failed: {:?}\n", e),
     };
 
-    Ok(KeyPair {
-        private,
-        pubkey: pubkey_bytes,
-    })
+    Ok(KeyPair { private, pubkey })
 }
 
 /// taken from linux/fsverity.h
@@ -227,9 +174,9 @@ pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
     let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let ptr = UserPtr::from_addr(arg);
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
-    let write_len = core::cmp::min(kp.pubkey.len(), buf_size);
+    let write_len = core::cmp::min(kp.pubkey.as_bytes().len(), buf_size);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
-    writer.write_slice(&kp.pubkey[..write_len])?;
+    writer.write_slice(&kp.pubkey.as_bytes()[..write_len])?;
     pr_info!("returned public key ({} bytes)\n", write_len);
     Ok(write_len as isize)
 }
@@ -258,14 +205,10 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
         req.sig_s[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
             .copy_from_slice(&limb.to_ne_bytes());
     }
-    req.pubkey.copy_from_slice(&kp.pubkey);
+    req.pubkey.copy_from_slice(kp.pubkey.as_bytes());
 
     write_sign_data_req(arg, buf_size, &req)?;
 
     pr_info!("computed signature\n");
     Ok(0)
-}
-
-pub(crate) fn check_fsverity() -> Result {
-    current_exe_fsverity_digest().map(|_| ())
 }

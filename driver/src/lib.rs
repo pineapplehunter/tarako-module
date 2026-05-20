@@ -34,6 +34,9 @@ pub(crate) mod set_once {
 pub(crate) mod signer_dev {
     include!("signer_dev.rs");
 }
+pub(crate) mod vli {
+    include!("vli.rs");
+}
 
 use kernel::miscdevice::{MiscDeviceOptions, MiscDeviceRegistration};
 use kernel::prelude::*;

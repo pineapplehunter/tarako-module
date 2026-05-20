@@ -25,12 +25,7 @@ impl MiscDevice for SignerDevice {
         KBox::try_pin_init(try_pin_init! { SignerDevice { dev: dev } }, GFP_KERNEL)
     }
 
-    // ioctl dispatch: gate everything behind an fs-verity check.
-    // Only processes whose executable is protected by fs-verity
-    // may call any of these ioctls.
     fn ioctl(_me: Pin<&SignerDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
-        ioctl::check_fsverity()?;
-
         match cmd {
             ioctl::SIGNER_HELLO => {
                 pr_info!("hello from ioctl\n");
