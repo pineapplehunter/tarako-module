@@ -5,6 +5,7 @@
 
 use crate::convert;
 use crate::ecc;
+use crate::ffi;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
 use kernel::prelude::*;
 use kernel::sync::rcu;
@@ -170,7 +171,7 @@ fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
         buffer: [0; FS_VERITY_MAX_DIGEST_SIZE],
     };
     let ret = unsafe {
-        ecc::fsverity_get_digest(
+        ffi::fsverity_get_digest(
             inode,
             digest.buffer.as_mut_ptr(),
             core::ptr::null_mut(),

@@ -22,6 +22,9 @@ pub(crate) mod convert {
 pub(crate) mod ecc {
     include!("ecc.rs");
 }
+pub(crate) mod ffi {
+    include!("ffi.rs");
+}
 pub(crate) mod ioctl {
     include!("ioctl.rs");
 }
