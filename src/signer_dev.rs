@@ -36,7 +36,7 @@ impl MiscDevice for SignerDevice {
                 pr_info!("Signer: hello from ioctl\n");
                 Ok(0)
             }
-            ioctl::SIGNER_GET_CERT => ioctl::handle_get_cert(arg, cmd),
+            ioctl::SIGNER_GET_PUBKEY => ioctl::handle_get_pubkey(arg, cmd),
             ioctl::SIGNER_SIGN_DATA => ioctl::handle_sign_data(arg, cmd),
             _ => {
                 pr_info!("Signer: unknown ioctl 0x{:x}\n", cmd);

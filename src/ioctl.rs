@@ -3,7 +3,6 @@
 // ioctl commands, global key-pair storage, ECDSA signing, key generation,
 // and fs-verity helpers.
 
-use crate::cert;
 use crate::convert;
 use crate::ecc;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
@@ -15,7 +14,7 @@ use crate::KEY_PAIR;
 
 // ioctl command numbers: type 'S' (0x53), sequence 0..2
 pub(crate) const SIGNER_HELLO: u32 = _IO('S' as u32, 0x00);
-pub(crate) const SIGNER_GET_CERT: u32 = _IOR::<[u8; 2048]>('S' as u32, 0x01);
+pub(crate) const SIGNER_GET_PUBKEY: u32 = _IOR::<[u8; 65]>('S' as u32, 0x01);
 pub(crate) const SIGNER_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
 
 #[repr(C)]
@@ -30,8 +29,6 @@ pub(crate) struct SignDataReq {
 pub(crate) struct KeyPair {
     pub private: [u64; ecc::DIGITS as usize],
     pub pubkey: [u8; 65],
-    pub cert: [u8; 2048],
-    pub cert_len: usize,
 }
 
 pub(crate) fn ecdsa_sign(data: &[u8], privkey: &[u64; 4]) -> Result<([u64; 4], [u64; 4])> {
@@ -134,13 +131,10 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
         Ok(_) => pr_info!("Signer: Public key successfully logged in IMA\n"),
         Err(e) => pr_err!("Signer: IMA measurement failed: {:?}\n", e),
     };
-    let (cert, cert_len) = cert::build_certificate(&private, &pub_x, &pub_y)?;
 
     Ok(KeyPair {
         private,
         pubkey: pubkey_bytes,
-        cert,
-        cert_len,
     })
 }
 
@@ -223,14 +217,14 @@ fn write_sign_data_req(arg: usize, buf_size: usize, req: &SignDataReq) -> Result
     Ok(())
 }
 
-pub(crate) fn handle_get_cert(arg: usize, cmd: u32) -> Result<isize> {
+pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
     let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let ptr = UserPtr::from_addr(arg);
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
-    let write_len = core::cmp::min(kp.cert_len, buf_size);
+    let write_len = core::cmp::min(kp.pubkey.len(), buf_size);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
-    writer.write_slice(&kp.cert[..write_len])?;
-    pr_info!("Signer: returned certificate ({} bytes)\n", write_len);
+    writer.write_slice(&kp.pubkey[..write_len])?;
+    pr_info!("Signer: returned public key ({} bytes)\n", write_len);
     Ok(write_len as isize)
 }
 

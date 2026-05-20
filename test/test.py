@@ -7,7 +7,7 @@
 #      the attester over TCP.
 #   3. Attester's responder runs `/mnt/signer-app <nonce_hex>`, which calls the
 #      SIGNER_SIGN_DATA ioctl.  The kernel signs SHA256(fsverity_digest || nonce)
-#      and returns (cert, hash, sig_r, sig_s, pubkey).
+#      and returns (hash, sig_r, sig_s, pubkey).
 #   4. Verifier prints the response, which the test driver captures.
 #   5. Test driver (host-side Python, with the cryptography library) verifies:
 #      - The nonce in the response matches what was sent.
@@ -123,9 +123,9 @@ print(out)
 # (Host-side, using the cryptography library via extraPythonPackages)
 
 assert "SIGNER_HELLO" in out
-assert "SIGNER_GET_CERT" in out
+assert "SIGNER_GET_PUBKEY" in out
 assert "SIGNER_SIGN_DATA" in out
-assert "certificate" in out
+assert "public key" in out
 
 # Verify nonce in response matches what verifier sent
 nonce_line = next(line for line in out.split("\n") if line.startswith("nonce:"))

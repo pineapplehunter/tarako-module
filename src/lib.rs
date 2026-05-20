@@ -5,11 +5,10 @@
 //! # Security model
 //!
 //! The kernel is the only trusted entity. On load it generates an ECDSA P-256
-//! key pair and a self-signed X.509 certificate, then exposes them through
-//! `/dev/signer` via three ioctls:
+//! key pair and exposes it through `/dev/signer` via three ioctls:
 //!
 //! 1. `SIGNER_HELLO` (0x0000_5300) - sanity check.
-//! 2. `SIGNER_GET_CERT` (0x8800_5301) - return the self-signed certificate.
+//! 2. `SIGNER_GET_PUBKEY` (0x8041_5301) - return the raw ECDSA P-256 public key.
 //! 3. `SIGNER_SIGN_DATA` (0xC0C1_5302) - remote attestation: read the calling
 //!    process's fs-verity digest, compute `ECDSA-SHA256(sk, SHA256(digest || nonce))`,
 //!    and return the signature together with the public key.
@@ -17,9 +16,6 @@
 //! The ioctl handler rejects callers whose executable is NOT protected by
 //! fs-verity, ensuring the measured code path cannot be tampered with.
 
-pub(crate) mod cert {
-    include!("cert.rs");
-}
 pub(crate) mod convert {
     include!("convert.rs");
 }
@@ -65,11 +61,7 @@ impl kernel::InPlaceModule for SignerModule {
         match generate_key_pair() {
             Ok(kp) => {
                 KEY_PAIR.populate(kp);
-                let len = KEY_PAIR.as_ref().map(|k| k.cert_len).unwrap_or(0);
-                pr_info!(
-                    "Signer: key pair generated, certificate ready ({} bytes)\n",
-                    len
-                );
+                pr_info!("Signer: key pair generated, public key ready\n");
             }
             Err(_) => {
                 pr_info!("Signer: failed to generate key pair\n");

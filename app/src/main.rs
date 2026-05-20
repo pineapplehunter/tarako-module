@@ -2,7 +2,7 @@
 //
 // Opens /dev/signer and issues three ioctls in sequence:
 //   1. SIGNER_HELLO       — sanity check
-//   2. SIGNER_GET_CERT    — retrieve the self-signed X.509 certificate
+//   2. SIGNER_GET_PUBKEY  — retrieve the raw ECDSA P-256 public key (65 bytes)
 //   3. SIGNER_SIGN_DATA   — remote attestation: signs SHA256(fsverity_digest || nonce)
 //
 // The nonce can be provided as a 64-hex-char command-line argument.
@@ -13,7 +13,7 @@
 use std::os::unix::io::AsRawFd;
 
 const SIGNER_HELLO: libc::c_ulong = 0x0000_5300;
-const SIGNER_GET_CERT: libc::c_ulong = 0x8800_5301;
+const SIGNER_GET_PUBKEY: libc::c_ulong = 0x8041_5301;
 const SIGNER_SIGN_DATA: libc::c_ulong = 0xC0C1_5302;
 
 #[repr(C)]
@@ -38,9 +38,7 @@ fn hex(buf: &[u8]) -> String {
 fn le_limbs_to_be_hex(raw: &[u8; 32]) -> String {
     let mut be = [0u8; 32];
     for i in 0..4 {
-        let limb = u64::from_le_bytes(
-            raw[(3 - i) * 8..(4 - i) * 8].try_into().unwrap(),
-        );
+        let limb = u64::from_le_bytes(raw[(3 - i) * 8..(4 - i) * 8].try_into().unwrap());
         be[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_be_bytes());
     }
     hex(&be)
@@ -68,10 +66,9 @@ fn main() {
         })
     } else {
         [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ]
     };
 
@@ -87,14 +84,20 @@ fn main() {
     let ret = unsafe { libc::ioctl(fd, SIGNER_HELLO) };
     println!("ioctl return: {ret}\n");
 
-    // 2. Get certificate — retrieve the self-signed X.509 certificate
-    println!("=== SIGNER_GET_CERT ===");
-    let mut cert = [0u8; 2048];
-    let ret = unsafe { libc::ioctl(fd, SIGNER_GET_CERT, cert.as_mut_ptr() as *mut libc::c_void) };
-    let cert_len = if ret > 0 { ret as usize } else { 0 };
+    // 2. Get public key — retrieve the raw ECDSA P-256 public key
+    println!("=== SIGNER_GET_PUBKEY ===");
+    let mut pubkey = [0u8; 65];
+    let ret = unsafe {
+        libc::ioctl(
+            fd,
+            SIGNER_GET_PUBKEY,
+            pubkey.as_mut_ptr() as *mut libc::c_void,
+        )
+    };
+    let pubkey_len = if ret > 0 { ret as usize } else { 0 };
     println!("ioctl return: {ret}");
-    println!("certificate ({cert_len} bytes):");
-    println!("  hex: {}", hex(&cert[..cert_len]));
+    println!("public key ({pubkey_len} bytes):");
+    println!("  hex: {}", hex(&pubkey[..pubkey_len]));
     println!();
 
     // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
@@ -106,7 +109,13 @@ fn main() {
         sig_s: [0u8; 32],
         pubkey: [0u8; 65],
     };
-    let ret = unsafe { libc::ioctl(fd, SIGNER_SIGN_DATA, &mut req as *mut _ as *mut libc::c_void) };
+    let ret = unsafe {
+        libc::ioctl(
+            fd,
+            SIGNER_SIGN_DATA,
+            &mut req as *mut _ as *mut libc::c_void,
+        )
+    };
     println!("ioctl return: {ret}");
     println!("nonce: {}", hex(&req.nonce));
     println!("hash: {}", hex(&req.hash));

@@ -18,9 +18,9 @@ make                                # local kernel module build (uses running ke
 
 ## Architecture
 
-- **`src/lib.rs`**: single-file kernel module. Creates `/dev/signer` miscdevice. On load, generates ECDSA P-256 key pair and self-signed X.509 certificate. Let the generated private key be SK and public key PK, and the self signed certificate as CERT. Ioctls:
+- **`src/lib.rs`**: single-file kernel module. Creates `/dev/signer` miscdevice. On load, generates ECDSA P-256 key pair. Let the generated private key be SK and public key PK. Ioctls:
   - `SIGNER_HELLO` (0x0000_5300) — sanity check
-  - `SIGNER_GET_CERT` (0x8800_5301) — return CERT.
+  - `SIGNER_GET_PUBKEY` (0x8041_5301) — return PK (raw 65-byte uncompressed point).
   - `SIGNER_SIGN_DATA` (0xC0C1_5302) — reads calling process's exe_file fs-verity digest as FVHASH, computes `sign(SK,SHA256(FVHASH || nonce))` where nonce is a value provided in ioctl from userspace. The signing process MUST be done in kernel space, since the kernel is the only entity trusted in this security model.
 - **`app/`**: userspace Cargo binary (`signer-app`), uses `libc::ioctl` with hardcoded ioctl numbers
 - **`modules/`**: NixOS modules enabling `FS_VERITY` and `IMA` kernel config
