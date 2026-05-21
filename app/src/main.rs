@@ -143,9 +143,10 @@ fn main() {
         std::process::exit(1);
     }
     let pubkey_len = ret as usize;
+    let der = pubkey_der(&pubkey);
     println!("ioctl return: {ret}");
     println!("public key ({pubkey_len} bytes) DER:");
-    println!("{}", hex(&pubkey_der(&pubkey)));
+    println!("{}", hex(&der));
 
     // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
     println!("=== SIGNER_SIGN_DATA ===");

@@ -8,13 +8,11 @@
 
 use crate::ecc;
 
-const PUBKEY_BYTES: usize = ecc::P256_PUBKEY_BYTES;
-
 /// SEC 1 uncompressed EC point (`0x04 || X || Y`, 65 bytes).
-pub(crate) struct UncompressedPubkey(pub(crate) [u8; PUBKEY_BYTES]);
+pub(crate) struct UncompressedPubkey(pub(crate) [u8; ecc::P256_PUBKEY_BYTES]);
 
 impl UncompressedPubkey {
-    pub(crate) fn as_bytes(&self) -> &[u8; PUBKEY_BYTES] {
+    pub(crate) fn as_bytes(&self) -> &[u8; ecc::P256_PUBKEY_BYTES] {
         &self.0
     }
 }

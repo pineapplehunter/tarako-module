@@ -21,6 +21,10 @@ pub(crate) struct Curve {
 }
 
 extern "C" {
+    // Allocate ecc_point (crypto/ecc.c:93)
+    pub(crate) fn ecc_alloc_point(ndigits: c_uint) -> *mut Point;
+    // Free ecc_point with kfree_sensitive (crypto/ecc.c:126)
+    pub(crate) fn ecc_free_point(p: *mut Point);
     // Generate ECDSA private key (crypto/ecc.c:1513)
     pub(crate) fn ecc_gen_privkey(curve_id: c_uint, ndigits: c_uint, key: *mut u64) -> c_int;
     // Derive public key from private key (crypto/ecc.c:1552)

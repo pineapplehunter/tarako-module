@@ -1,6 +1,6 @@
 { lib, testers }:
 testers.runNixOSTest {
-  name = "signer";
+  name = "signer-attestation";
 
   nodes = {
     attester =

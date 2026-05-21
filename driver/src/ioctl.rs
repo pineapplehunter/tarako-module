@@ -5,6 +5,7 @@
 
 use crate::convert;
 use crate::ecc;
+use crate::ecc::{P256_BYTES, P256_PUBKEY_BYTES};
 use crate::ffi;
 use crate::set_once::SetOnce;
 use crate::vli::Scalar;
@@ -15,26 +16,20 @@ use kernel::uaccess::{UserPtr, UserSlice};
 #[cfg(target_endian = "big")]
 compile_error!("signer module requires little-endian target");
 
-const DIGITS: usize = ecc::P256_DIGITS as usize;
-const BYTES: usize = ecc::P256_BYTES as usize;
-const PUBKEY_BYTES: usize = ecc::P256_PUBKEY_BYTES;
-
-const _: () = assert!(PUBKEY_BYTES == 1 + 2 * BYTES);
-
 pub(crate) static CURVE_N: SetOnce<Scalar> = SetOnce::new();
 
 // ioctl command numbers: type 'S' (0x53), sequence 0..2
 pub(crate) const SIGNER_HELLO: u32 = _IO('S' as u32, 0x00);
-pub(crate) const SIGNER_GET_PUBKEY: u32 = _IOR::<[u8; PUBKEY_BYTES]>('S' as u32, 0x01);
+pub(crate) const SIGNER_GET_PUBKEY: u32 = _IOR::<[u8; P256_PUBKEY_BYTES]>('S' as u32, 0x01);
 pub(crate) const SIGNER_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
 
 #[repr(C)]
 pub(crate) struct SignDataReq {
-    pub nonce: [u8; BYTES],
-    pub hash: [u8; BYTES],
-    pub sig_r: [u8; BYTES],
-    pub sig_s: [u8; BYTES],
-    pub pubkey: [u8; PUBKEY_BYTES],
+    pub nonce: [u8; P256_BYTES],
+    pub hash: [u8; P256_BYTES],
+    pub sig_r: [u8; P256_BYTES],
+    pub sig_s: [u8; P256_BYTES],
+    pub pubkey: [u8; P256_PUBKEY_BYTES],
 }
 
 pub(crate) struct KeyPair {
@@ -50,8 +45,7 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
         let k = ecc::generate_private_key()?;
         let pubk = ecc::make_public_key(&k)?;
 
-        let mut r_swapped = Scalar::zero();
-        r_swapped.copy_from_slice(&pubk[..DIGITS]);
+        let r_swapped = pubk.x_scalar();
         let mut r = r_swapped.unswap();
         if r >= curve_n {
             r = r - curve_n;
@@ -90,12 +84,12 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
 pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     let private = ecc::generate_private_key()?;
     let public = ecc::make_public_key(&private)?;
-    let mut pubkey = convert::UncompressedPubkey([0u8; PUBKEY_BYTES]);
+    let mut pubkey = convert::UncompressedPubkey([0u8; P256_PUBKEY_BYTES]);
     pubkey.0[0] = 0x04;
-    let bytes: [u8; 2 * BYTES] = unsafe { core::mem::transmute(*public) };
-    pubkey.0[1..].copy_from_slice(&bytes);
+    pubkey.0[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
+    pubkey.0[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
 
-    match ecc::ima_measure_pubkey(&pubkey) {
+    match ecc::ima_measure_pubkey(pubkey.as_bytes()) {
         Ok(_) => pr_info!("Public key successfully logged in IMA\n"),
         Err(e) => pr_err!("IMA measurement failed: {:?}\n", e),
     };
@@ -171,11 +165,11 @@ fn read_sign_data_req(arg: usize, buf_size: usize) -> Result<SignDataReq> {
     let ptr = UserPtr::from_addr(arg);
     let mut reader = UserSlice::new(ptr, buf_size).reader();
     let mut req = SignDataReq {
-        nonce: [0u8; BYTES],
-        hash: [0u8; BYTES],
-        sig_r: [0u8; BYTES],
-        sig_s: [0u8; BYTES],
-        pubkey: [0u8; PUBKEY_BYTES],
+        nonce: [0u8; P256_BYTES],
+        hash: [0u8; P256_BYTES],
+        sig_r: [0u8; P256_BYTES],
+        sig_s: [0u8; P256_BYTES],
+        pubkey: [0u8; P256_PUBKEY_BYTES],
     };
     reader.read_slice(sign_data_req_bytes_mut(&mut req))?;
     Ok(req)
@@ -191,14 +185,14 @@ fn write_sign_data_req(arg: usize, buf_size: usize, req: &SignDataReq) -> Result
 pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
     let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
-    if buf_size < PUBKEY_BYTES {
+    if buf_size < P256_PUBKEY_BYTES {
         return Err(E2BIG);
     }
     let ptr = UserPtr::from_addr(arg);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
     writer.write_slice(kp.pubkey.as_bytes())?;
-    pr_info!("returned public key ({} bytes)\n", PUBKEY_BYTES);
-    Ok(PUBKEY_BYTES as isize)
+    pr_info!("returned public key ({} bytes)\n", P256_PUBKEY_BYTES);
+    Ok(P256_PUBKEY_BYTES as isize)
 }
 
 pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
@@ -208,8 +202,8 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
     let digest = digest.digest();
 
     let mut req = read_sign_data_req(arg, buf_size)?;
-    let to_sign_len = digest.len().checked_add(BYTES).ok_or(EINVAL)?;
-    let mut to_sign = [0u8; FS_VERITY_MAX_DIGEST_SIZE + BYTES];
+    let to_sign_len = digest.len().checked_add(P256_BYTES).ok_or(EINVAL)?;
+    let mut to_sign = [0u8; FS_VERITY_MAX_DIGEST_SIZE + P256_BYTES];
     to_sign[..digest.len()].copy_from_slice(&digest);
     to_sign[digest.len()..to_sign_len].copy_from_slice(&req.nonce);
 

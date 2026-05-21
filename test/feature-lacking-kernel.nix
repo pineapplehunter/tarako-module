@@ -1,6 +1,6 @@
 { lib, testers }:
 testers.runNixOSTest {
-  name = "signer-rejected";
+  name = "signer-feature-lacking-kernel";
 
   nodes.machine =
     { config, pkgs, ... }:

@@ -2,8 +2,8 @@
 
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 use kernel::sync::atomic::{
-    Atomic,
     ordering::{Acquire, Relaxed, Release},
+    Atomic,
 };
 
 pub(crate) struct SetOnce<T> {

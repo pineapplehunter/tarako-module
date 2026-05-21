@@ -10,10 +10,6 @@ use core::ops::{Add, Sub};
 /// P-256 scalar / coordinate (4 limbs, 256 bits).
 pub(crate) type Scalar = Vli<{ crate::ecc::P256_DIGITS }>;
 
-/// Concatenated X || Y coordinates (8 limbs, 512 bits) as output by
-/// `ecc_make_pub_key`.
-pub(crate) type XY = Vli<{ 2 * crate::ecc::P256_DIGITS }>;
-
 /// A variable-length integer represented as N 64-bit limbs in LE order.
 #[repr(transparent)]
 pub(crate) struct Vli<const N: usize>([u64; N]);
