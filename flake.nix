@@ -18,7 +18,12 @@
       ];
 
       perSystem =
-        { pkgs, system, ... }:
+        {
+          pkgs,
+          self',
+          system,
+          ...
+        }:
         {
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
@@ -29,6 +34,17 @@
 
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
+
+          # Minimal kernel source tree with just the Rust files (~4.7 MB).
+          packages.kernel-src =
+            pkgs.runCommand "linux-src-${pkgs.linuxPackages.kernel.modDirVersion}"
+              {
+                src = pkgs.linuxPackages.kernel.src;
+              }
+              ''
+                mkdir -p $out
+                tar xf "$src" --strip-components=1 -C "$out" --wildcards '*/rust/*'
+              '';
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
           checks.feature-lacking-kernel = pkgs.callPackage ./test/feature-lacking-kernel.nix { };
@@ -45,6 +61,14 @@
                 targets = [ ];
               })
             ];
+
+            RUST_KERNEL_SRCTREE = "${self'.packages.kernel-src}";
+            RUST_KERNEL_OBJTREE = "${pkgs.linuxPackages.kernel.dev}/lib/modules/${pkgs.linuxPackages.kernel.modDirVersion}/build";
+
+            shellHook = ''
+              export RUST_SYSROOT="$(rustc --print sysroot)"
+              export RUST_LIB_SRC="$RUST_SYSROOT/lib/rustlib/src/rust/library"
+            '';
           };
 
           formatter = pkgs.nixfmt-tree;
