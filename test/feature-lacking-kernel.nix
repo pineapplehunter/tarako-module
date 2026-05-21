@@ -10,7 +10,10 @@ testers.runNixOSTest {
     {
       boot.kernelPackages = pkgs.linuxPackages;
       boot.extraModulePackages = [ signer-mod ];
-      environment.systemPackages = [ pkgs.python3 ];
+      environment.systemPackages = [
+        pkgs.python3
+        (pkgs.pkgsStatic.callPackage ../app/package.nix { })
+      ];
       virtualisation = {
         tpm.enable = true;
         useEFIBoot = true;

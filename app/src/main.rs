@@ -119,6 +119,10 @@ fn main() {
     // 1. Hello — verify the device is responsive
     println!("=== SIGNER_HELLO ===");
     let ret = unsafe { libc::ioctl(fd, SIGNER_HELLO as _) };
+    if ret < 0 {
+        eprintln!("SIGNER_HELLO failed: {}", std::io::Error::last_os_error());
+        std::process::exit(1);
+    }
     println!("ioctl return: {ret}\n");
 
     // 2. Get public key — retrieve the raw ECDSA P-256 public key
@@ -131,7 +135,14 @@ fn main() {
             pubkey.as_mut_ptr() as *mut libc::c_void,
         )
     };
-    let pubkey_len = if ret > 0 { ret as usize } else { 0 };
+    if ret < 0 {
+        eprintln!(
+            "SIGNER_GET_PUBKEY failed: {}",
+            std::io::Error::last_os_error()
+        );
+        std::process::exit(1);
+    }
+    let pubkey_len = ret as usize;
     println!("ioctl return: {ret}");
     println!("public key ({pubkey_len} bytes) DER:");
     println!("{}", hex(&pubkey_der(&pubkey)));
@@ -152,6 +163,13 @@ fn main() {
             &mut req as *mut _ as *mut libc::c_void,
         )
     };
+    if ret < 0 {
+        eprintln!(
+            "SIGNER_SIGN_DATA failed: {}",
+            std::io::Error::last_os_error()
+        );
+        std::process::exit(1);
+    }
     println!("ioctl return: {ret}");
     println!("nonce: {}", hex(&req.nonce));
     println!("hash: {}", hex(&req.hash));
