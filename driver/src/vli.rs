@@ -2,13 +2,14 @@
 //
 // Variable-Length Integer type wrapping `[u64; N]` limbs for ECC arithmetic.
 
+use crate::ecc::P256_DIGITS;
 use crate::ffi;
 use core::cmp::Ordering;
 use core::ffi::{c_int, c_uint};
 use core::ops::{Add, Sub};
 
 /// P-256 scalar / coordinate (4 limbs, 256 bits).
-pub(crate) type Scalar = Vli<{ crate::ecc::P256_DIGITS }>;
+pub(crate) type Scalar = Vli<P256_DIGITS>;
 
 /// A variable-length integer represented as N 64-bit limbs in LE order.
 #[repr(transparent)]

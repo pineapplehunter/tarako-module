@@ -3,12 +3,11 @@
 // ioctl commands, global key-pair storage, ECDSA signing, key generation,
 // and fs-verity helpers.
 
-use crate::convert;
-use crate::ecc;
-use crate::ecc::{P256_BYTES, P256_PUBKEY_BYTES};
+use crate::ecc::{self, P256_BYTES, P256_PUBKEY_BYTES};
 use crate::ffi;
 use crate::set_once::SetOnce;
 use crate::vli::Scalar;
+use crate::KEY_PAIR;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
 use kernel::prelude::*;
 use kernel::uaccess::{UserPtr, UserSlice};
@@ -34,7 +33,7 @@ pub(crate) struct SignDataReq {
 
 pub(crate) struct KeyPair {
     pub private: Scalar,
-    pub pubkey: convert::UncompressedPubkey,
+    pub pubkey: [u8; P256_PUBKEY_BYTES],
 }
 
 pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scalar)> {
@@ -84,12 +83,12 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
 pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     let private = ecc::generate_private_key()?;
     let public = ecc::make_public_key(&private)?;
-    let mut pubkey = convert::UncompressedPubkey([0u8; P256_PUBKEY_BYTES]);
-    pubkey.0[0] = 0x04;
-    pubkey.0[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
-    pubkey.0[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
+    let mut pubkey = [0u8; P256_PUBKEY_BYTES];
+    pubkey[0] = 0x04;
+    pubkey[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
+    pubkey[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
 
-    match ecc::ima_measure_pubkey(pubkey.as_bytes()) {
+    match ecc::ima_measure_pubkey(&pubkey) {
         Ok(_) => pr_info!("Public key successfully logged in IMA\n"),
         Err(e) => pr_err!("IMA measurement failed: {:?}\n", e),
     };
@@ -115,7 +114,7 @@ impl FsverityDigest {
 }
 
 fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
-    let current = crate::current!();
+    let current = current!();
     let mm = current.mm().ok_or(EPERM)?;
     let mm_ptr = mm.as_raw();
     if mm_ptr.is_null() {
@@ -183,14 +182,14 @@ fn write_sign_data_req(arg: usize, buf_size: usize, req: &SignDataReq) -> Result
 }
 
 pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
-    let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
+    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
     if buf_size < P256_PUBKEY_BYTES {
         return Err(E2BIG);
     }
     let ptr = UserPtr::from_addr(arg);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
-    writer.write_slice(kp.pubkey.as_bytes())?;
+    writer.write_slice(&kp.pubkey)?;
     pr_info!("returned public key ({} bytes)\n", P256_PUBKEY_BYTES);
     Ok(P256_PUBKEY_BYTES as isize)
 }
@@ -209,7 +208,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 
     req.hash = ecc::sha256_hash(&to_sign[..to_sign_len]);
 
-    let kp = crate::KEY_PAIR.as_ref().ok_or(ENXIO)?;
+    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
     let (sig_r_limbs, sig_s_limbs) = ecdsa_sign(&to_sign[..to_sign_len], &kp.private)?;
     for (i, limb) in sig_r_limbs.iter().rev().enumerate() {
         req.sig_r[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
@@ -219,7 +218,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
         req.sig_s[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
             .copy_from_slice(&limb.to_be_bytes());
     }
-    req.pubkey.copy_from_slice(kp.pubkey.as_bytes());
+    req.pubkey.copy_from_slice(&kp.pubkey);
 
     write_sign_data_req(arg, buf_size, &req)?;
 

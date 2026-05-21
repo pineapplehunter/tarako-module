@@ -16,9 +16,6 @@
 //! The ioctl handler rejects callers whose executable is NOT protected by
 //! fs-verity, ensuring the measured code path cannot be tampered with.
 
-pub(crate) mod convert {
-    include!("convert.rs");
-}
 pub(crate) mod ecc {
     include!("ecc.rs");
 }
@@ -31,22 +28,22 @@ pub(crate) mod ioctl {
 pub(crate) mod set_once {
     include!("set_once.rs");
 }
-pub(crate) mod signer_dev {
-    include!("signer_dev.rs");
-}
 pub(crate) mod vli {
     include!("vli.rs");
 }
 
-use kernel::miscdevice::{MiscDeviceOptions, MiscDeviceRegistration};
+use kernel::alloc::flags::GFP_KERNEL;
+use kernel::device::Device;
+use kernel::fs::File;
+use kernel::miscdevice::{MiscDevice, MiscDeviceOptions, MiscDeviceRegistration};
 use kernel::prelude::*;
+use kernel::sync::aref::ARef;
 
-use crate::ioctl::generate_key_pair;
-use crate::ioctl::KeyPair;
+use crate::ioctl::{
+    generate_key_pair, handle_get_pubkey, handle_sign_data, KeyPair, SIGNER_GET_PUBKEY,
+    SIGNER_HELLO, SIGNER_SIGN_DATA,
+};
 use crate::set_once::SetOnce;
-use crate::signer_dev::SignerDevice;
-
-pub(crate) static KEY_PAIR: SetOnce<KeyPair> = SetOnce::new();
 
 module! {
     type: SignerModule,
@@ -82,3 +79,45 @@ impl kernel::InPlaceModule for SignerModule {
         })
     }
 }
+
+// ── /dev/signer miscdevice ──
+
+#[pin_data(PinnedDrop)]
+pub(crate) struct SignerDevice {
+    dev: ARef<Device>,
+}
+
+#[vtable]
+impl MiscDevice for SignerDevice {
+    type Ptr = Pin<KBox<Self>>;
+
+    fn open(_file: &File, misc: &MiscDeviceRegistration<Self>) -> Result<Pin<KBox<Self>>> {
+        let dev = ARef::from(misc.device());
+        pr_info!("opened\n");
+        KBox::try_pin_init(try_pin_init! { SignerDevice { dev: dev } }, GFP_KERNEL)
+    }
+
+    fn ioctl(_me: Pin<&SignerDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
+        match cmd {
+            SIGNER_HELLO => {
+                pr_info!("hello from ioctl\n");
+                Ok(0)
+            }
+            SIGNER_GET_PUBKEY => handle_get_pubkey(arg, cmd),
+            SIGNER_SIGN_DATA => handle_sign_data(arg, cmd),
+            _ => {
+                pr_info!("unknown ioctl 0x{:x}\n", cmd);
+                Err(ENOTTY)
+            }
+        }
+    }
+}
+
+#[pinned_drop]
+impl PinnedDrop for SignerDevice {
+    fn drop(self: Pin<&mut Self>) {
+        pr_info!("goodbye!\n");
+    }
+}
+
+pub(crate) static KEY_PAIR: SetOnce<KeyPair> = SetOnce::new();
