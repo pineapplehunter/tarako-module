@@ -73,7 +73,7 @@ The integration test creates two VMs:
 
 ## RA-TLS compatibility
 
-The module can sign the attestation binder from `draft-fossati-seat-early-attestation-05`. Under the documented assumptions that platform Evidence and IMA state have already authenticated Tarako's public key, this signature can be the source of fresh, application-specific Evidence. CMW encoding and TLS integration remain application responsibilities; using Tarako's key as the TLS identity key additionally requires a corresponding certificate and `CertificateVerify` signing path. See [RA_TLS.md](RA_TLS.md) for the assessment and integration design.
+The module can sign the attestation binder from `draft-fossati-seat-early-attestation-05`. Under the documented assumptions that platform Evidence and IMA state have authenticated Tarako's public key, and that the TLS application runs with confidentiality and integrity guarantees, this signature can be the source of fresh, application-specific Evidence. The application retains its separate certificate private key and performs normal TLS signing; Tarako only signs Evidence. CMW encoding and TLS integration remain application responsibilities. See [RA_TLS.md](RA_TLS.md) for the complete assumptions, Evidence profile, and integration design.
 
 ## Key files
 
