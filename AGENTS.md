@@ -17,8 +17,8 @@ Commands run in `nix develop` shell unless noted. The attestation test verifies 
 
 ## Architecture
 
-- **`driver/src/`**: Rust kernel module (`miscdevice`, `/dev/tarako`). Sub-files are `include!()`'d from `lib.rs` (not separate compiled units — Kbuild only lists `src/lib.o`). Generates ECDSA P-256 key pair on load, zeroizes private key on unload. Three ioctls, each guarded: caller's exe must be fs-verity protected.
-- **`app/`**: standalone Cargo binary with `der` and `libc` crates. Uses hardcoded ioctl numbers matching the kernel module. Accepts optional 64-hex-char nonce on CLI.
+- **`driver/src/`**: Rust kernel module (`miscdevice`, `/dev/tarako`). Sub-files are `include!()`'d from `lib.rs` (not separate compiled units — Kbuild only lists `src/lib.o`). Generates ECDSA P-256 key pair on load, zeroizes private key on unload. The signing ioctl is guarded: the caller's exe must be fs-verity protected.
+- **`app/`**: standalone Cargo binary with `der` and `libc` crates. Uses hardcoded ioctl numbers matching the kernel module. Accepts up to 1024 bits of hex user data on the CLI; shorter values such as a nonce are zero-padded.
 - **`modules/`**: NixOS kernel config modules for `FS_VERITY` and `IMA`.
 - **`test/`**: NixOS VM test definitions (`attestation.nix`/`.py`, `feature-lacking-kernel.nix`/`.py`), plus TCP responder (`responder.py`, Flask) and client (`client.py`, requests).
 
@@ -27,9 +27,9 @@ Ioctls:
 |---|---|---|
 | `TARAKO_HELLO` | `0x0000_5300` | none |
 | `TARAKO_GET_PUBKEY` | `0x8041_5301` | read (65-byte uncompressed point) |
-| `TARAKO_SIGN_DATA` | `0xC0C1_5302` | read/write (SignDataReq: nonce+hash+sig_r+sig_s+pubkey = 193 bytes) |
+| `TARAKO_SIGN_DATA` | `0xC121_5302` | read/write (SignDataReq: user_data+hash+sig_r+sig_s+pubkey = 289 bytes) |
 
-The kernel computes `ECDSA-SHA256(SK, SHA256(fsverity_digest || nonce))` — signing must happen in kernel space by design.
+The kernel computes `ECDSA-SHA256(SK, fsverity_digest || user_data)` for 128 bytes of opaque user data — signing must happen in kernel space by design.
 
 ## Non-obvious dev tools
 

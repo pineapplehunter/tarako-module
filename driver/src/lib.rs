@@ -9,12 +9,13 @@
 //!
 //! 1. `TARAKO_HELLO` (0x0000_5300) - sanity check.
 //! 2. `TARAKO_GET_PUBKEY` (0x8041_5301) - return the raw ECDSA P-256 public key.
-//! 3. `TARAKO_SIGN_DATA` (0xC0C1_5302) - remote attestation: read the calling
-//!    process's fs-verity digest, compute `ECDSA-SHA256(sk, SHA256(digest || nonce))`,
-//!    and return the signature together with the public key.
+//! 3. `TARAKO_SIGN_DATA` (0xC121_5302) - remote attestation: read the calling
+//!    process's fs-verity digest, compute
+//!    `ECDSA-SHA256(sk, SHA256(digest || user_data))` for 1024 bits of opaque
+//!    user data, and return the signature together with the public key.
 //!
-//! The ioctl handler rejects callers whose executable is NOT protected by
-//! fs-verity, ensuring the measured code path cannot be tampered with.
+//! The signing ioctl rejects callers whose executable is NOT protected by
+//! fs-verity, binding each signature to the measured executable.
 
 pub(crate) mod ecc {
     include!("ecc.rs");

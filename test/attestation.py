@@ -5,12 +5,13 @@
 #      copy of tarako-app, and starts a TCP responder on port 9999.
 #   2. Verifier VM boots, generates a random 32-byte nonce, and sends it to
 #      the attester over TCP.
-#   3. Attester's responder runs `/mnt/tarako-app <nonce_hex>`, which calls the
-#      TARAKO_SIGN_DATA ioctl.  The kernel signs SHA256(fsverity_digest || nonce)
-#      and returns (hash, sig_r, sig_s, pubkey).
+#   3. Attester's responder runs `/mnt/tarako-app <nonce_hex>`, which zero-pads
+#      the nonce to 1024-bit opaque user data and calls TARAKO_SIGN_DATA. The
+#      kernel signs SHA256(fsverity_digest || user_data) and returns
+#      (hash, sig_r, sig_s, pubkey).
 #   4. Verifier prints the response, which the test driver captures.
 #   5. Test driver verifies:
-#      - The nonce in the response matches what was sent.
+#      - The user data contains the nonce followed by zero padding.
 #      - The ECDSA signature verifies against the public key via openssl.
 import os, binascii, hashlib, base64
 
@@ -88,14 +89,18 @@ assert "TARAKO_GET_PUBKEY" in out
 assert "TARAKO_SIGN_DATA" in out
 assert "public key (65 bytes) DER:" in out
 
-# Verify nonce in response matches what verifier sent
-nonce_line = next(line for line in out.split("\n") if line.startswith("nonce:"))
-response_nonce_hex = nonce_line[6:].strip()
-assert response_nonce_hex == nonce_hex, f"nonce mismatch: {response_nonce_hex} != {nonce_hex}"
-print("Nonce match verified")
+# Verify the 32-byte nonce was preserved and padded to 1024-bit user data.
+user_data = nonce + bytes(128 - len(nonce))
+user_data_line = next(line for line in out.split("\n") if line.startswith("user data:"))
+response_user_data_hex = user_data_line[len("user data:"):].strip()
+expected_user_data_hex = user_data.hex()
+assert response_user_data_hex == expected_user_data_hex, (
+    f"user data mismatch: {response_user_data_hex} != {expected_user_data_hex}"
+)
+print("Nonce input and zero padding verified")
 
 # Print reference hash for debugging
-msg_raw = binascii.unhexlify(fsverity_digest_hex) + nonce
+msg_raw = binascii.unhexlify(fsverity_digest_hex) + user_data
 hash_line = next(line for line in out.split("\n") if line.startswith("hash:"))
 kernel_hash_hex = hash_line[5:].strip()
 ref_hash = hashlib.sha256(msg_raw).hexdigest()

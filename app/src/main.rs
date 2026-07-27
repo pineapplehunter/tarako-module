@@ -3,24 +3,26 @@
 // Opens /dev/tarako and issues three ioctls in sequence:
 //   1. TARAKO_HELLO       — sanity check
 //   2. TARAKO_GET_PUBKEY  — retrieve the raw ECDSA P-256 public key (65 bytes)
-//   3. TARAKO_SIGN_DATA   — remote attestation: signs SHA256(fsverity_digest || nonce)
+//   3. TARAKO_SIGN_DATA   — signs SHA256(fsverity_digest || user_data)
 //
-// The nonce can be provided as a 64-hex-char command-line argument.
-// Without an argument, a hardcoded nonce is used (for testing).
+// Up to 1024 bits of opaque user data can be provided as a hex command-line
+// argument. Shorter values (such as a 32-byte nonce) are zero-padded to 1024
+// bits. Without an argument, a hardcoded 32-byte nonce is used (for testing).
 //
 // This binary must reside on an fs-verity-protected filesystem; the kernel
-// module rejects ioctls from non-verity processes.
+// module rejects signing requests from non-verity processes.
 use der::asn1::{BitString, ObjectIdentifier, UintRef};
 use der::{Encode, SliceWriter, Tag};
 use std::os::unix::io::AsRawFd;
 
 const TARAKO_HELLO: libc::c_ulong = 0x0000_5300;
 const TARAKO_GET_PUBKEY: libc::c_ulong = 0x8041_5301;
-const TARAKO_SIGN_DATA: libc::c_ulong = 0xC0C1_5302;
+const TARAKO_SIGN_DATA: libc::c_ulong = 0xC121_5302;
+const USER_DATA_BYTES: usize = 1024 / 8;
 
 #[repr(C)]
 struct SignDataReq {
-    nonce: [u8; 32],
+    user_data: [u8; USER_DATA_BYTES],
     hash: [u8; 32],
     sig_r: [u8; 32],
     sig_s: [u8; 32],
@@ -81,13 +83,13 @@ fn sig_der(sig_r: &[u8; 32], sig_s: &[u8; 32]) -> Vec<u8> {
     buf
 }
 
-fn parse_hex_nonce(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
+fn parse_hex_user_data(s: &str) -> Option<[u8; USER_DATA_BYTES]> {
+    if s.is_empty() || s.len() > USER_DATA_BYTES * 2 || s.len() % 2 != 0 {
         return None;
     }
-    let mut out = [0u8; 32];
-    for i in 0..32 {
-        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    let mut out = [0u8; USER_DATA_BYTES];
+    for (i, byte) in out.iter_mut().take(s.len() / 2).enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
 }
@@ -95,18 +97,20 @@ fn parse_hex_nonce(s: &str) -> Option<[u8; 32]> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Use the provided hex nonce, or fall back to a hardcoded one
-    let nonce: [u8; 32] = if args.len() > 1 {
-        parse_hex_nonce(&args[1]).unwrap_or_else(|| {
-            eprintln!("usage: {} [64-hex-nonce]", args[0]);
+    // Use the provided opaque data, or a hardcoded nonce padded with zeroes.
+    let user_data = if args.len() > 1 {
+        parse_hex_user_data(&args[1]).unwrap_or_else(|| {
+            eprintln!("usage: {} [hex-user-data (up to 256 hex chars)]", args[0]);
             std::process::exit(1);
         })
     } else {
-        [
+        let mut data = [0u8; USER_DATA_BYTES];
+        data[..32].copy_from_slice(&[
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
             0x1d, 0x1e, 0x1f, 0x20,
-        ]
+        ]);
+        data
     };
 
     let file = std::fs::OpenOptions::new()
@@ -148,10 +152,10 @@ fn main() {
     println!("public key ({pubkey_len} bytes) DER:");
     println!("{}", hex(&der));
 
-    // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
+    // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || user_data))
     println!("=== TARAKO_SIGN_DATA ===");
     let mut req = SignDataReq {
-        nonce,
+        user_data,
         hash: [0u8; 32],
         sig_r: [0u8; 32],
         sig_s: [0u8; 32],
@@ -172,7 +176,7 @@ fn main() {
         std::process::exit(1);
     }
     println!("ioctl return: {ret}");
-    println!("nonce: {}", hex(&req.nonce));
+    println!("user data: {}", hex(&req.user_data));
     println!("hash: {}", hex(&req.hash));
     // Kernel returns raw LE-limb bytes; convert to big-endian hex for display
     println!("sig_r: {}", hex(&req.sig_r));

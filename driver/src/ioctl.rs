@@ -17,6 +17,9 @@ compile_error!("tarako module requires little-endian target");
 
 pub(crate) static CURVE_N: SetOnce<Scalar> = SetOnce::new();
 
+/// Size of the opaque data supplied by userspace to the signing ioctl.
+pub(crate) const USER_DATA_BYTES: usize = 1024 / 8;
+
 // ioctl command numbers: type 'S' (0x53), sequence 0..2
 pub(crate) const TARAKO_HELLO: u32 = _IO('S' as u32, 0x00);
 pub(crate) const TARAKO_GET_PUBKEY: u32 = _IOR::<[u8; P256_PUBKEY_BYTES]>('S' as u32, 0x01);
@@ -24,7 +27,7 @@ pub(crate) const TARAKO_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
 
 #[repr(C)]
 pub(crate) struct SignDataReq {
-    pub nonce: [u8; P256_BYTES],
+    pub user_data: [u8; USER_DATA_BYTES],
     pub hash: [u8; P256_BYTES],
     pub sig_r: [u8; P256_BYTES],
     pub sig_s: [u8; P256_BYTES],
@@ -164,7 +167,7 @@ fn read_sign_data_req(arg: usize, buf_size: usize) -> Result<SignDataReq> {
     let ptr = UserPtr::from_addr(arg);
     let mut reader = UserSlice::new(ptr, buf_size).reader();
     let mut req = SignDataReq {
-        nonce: [0u8; P256_BYTES],
+        user_data: [0u8; USER_DATA_BYTES],
         hash: [0u8; P256_BYTES],
         sig_r: [0u8; P256_BYTES],
         sig_s: [0u8; P256_BYTES],
@@ -201,10 +204,10 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
     let digest = digest.digest();
 
     let mut req = read_sign_data_req(arg, buf_size)?;
-    let to_sign_len = digest.len().checked_add(P256_BYTES).ok_or(EINVAL)?;
-    let mut to_sign = [0u8; FS_VERITY_MAX_DIGEST_SIZE + P256_BYTES];
+    let to_sign_len = digest.len().checked_add(USER_DATA_BYTES).ok_or(EINVAL)?;
+    let mut to_sign = [0u8; FS_VERITY_MAX_DIGEST_SIZE + USER_DATA_BYTES];
     to_sign[..digest.len()].copy_from_slice(&digest);
-    to_sign[digest.len()..to_sign_len].copy_from_slice(&req.nonce);
+    to_sign[digest.len()..to_sign_len].copy_from_slice(&req.user_data);
 
     req.hash = ecc::sha256_hash(&to_sign[..to_sign_len]);
 
