@@ -14,14 +14,6 @@ testers.runNixOSTest {
         } ./responder.py;
       in
       {
-        imports = [
-          ../modules/fsverity.nix
-          ../modules/ima.nix
-        ];
-
-        custom.fsverity.enable = true;
-        custom.ima.enable = true;
-
         boot.kernelPackages = pkgs.linuxPackages_latest;
         boot.extraModulePackages = [ tarako-mod ];
         boot.kernelParams = [ "ima_policy=critical_data" ];
@@ -29,6 +21,7 @@ testers.runNixOSTest {
         environment.systemPackages = [
           tarako-app
           tarako-responder
+          pkgs.fsverity-utils
           pkgs.openssl
           pkgs.python3
         ];

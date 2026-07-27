@@ -5,7 +5,6 @@
 
 use crate::ecc::{self, P256_BYTES, P256_PUBKEY_BYTES};
 use crate::ffi;
-use crate::set_once::SetOnce;
 use crate::vli::Scalar;
 use crate::KEY_PAIR;
 use kernel::ioctl::{_IO, _IOR, _IOWR};
@@ -14,8 +13,6 @@ use kernel::uaccess::{UserPtr, UserSlice};
 
 #[cfg(target_endian = "big")]
 compile_error!("tarako module requires little-endian target");
-
-pub(crate) static CURVE_N: SetOnce<Scalar> = SetOnce::new();
 
 /// Size of the opaque data supplied by userspace to the signing ioctl.
 pub(crate) const USER_DATA_BYTES: usize = 1024 / 8;
@@ -34,13 +31,26 @@ pub(crate) struct SignDataReq {
     pub pubkey: [u8; P256_PUBKEY_BYTES],
 }
 
+const _: () = assert!(core::mem::size_of::<SignDataReq>() == 289);
+
 pub(crate) struct KeyPair {
     pub private: Scalar,
     pub pubkey: [u8; P256_PUBKEY_BYTES],
+    curve_n: Scalar,
+    ima_measured: bool,
 }
 
-pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scalar)> {
-    let curve_n = CURVE_N.as_ref().ok_or(EINVAL)?;
+impl KeyPair {
+    fn sign(&self, data: &[u8]) -> Result<(Scalar, Scalar)> {
+        ecdsa_sign(data, &self.private, &self.curve_n)
+    }
+}
+
+fn ecdsa_sign(
+    data: &[u8],
+    privkey: &Scalar,
+    curve_n: &Scalar,
+) -> Result<(Scalar, Scalar)> {
     let data_hash = ecc::sha256_hash(data);
 
     for _ in 0..100 {
@@ -57,7 +67,7 @@ pub(crate) fn ecdsa_sign(data: &[u8], privkey: &Scalar) -> Result<(Scalar, Scala
             continue;
         }
 
-        let mut z = Scalar::from_be_bytes(&data_hash);
+        let mut z = Scalar::from_be_bytes(&data_hash)?;
         if z >= curve_n {
             z = z - curve_n;
         }
@@ -91,15 +101,30 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     pubkey[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
     pubkey[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
 
-    match ecc::ima_measure_pubkey(&pubkey) {
-        Ok(_) => pr_info!("Public key successfully logged in IMA\n"),
-        Err(e) => pr_err!("IMA measurement failed: {:?}\n", e),
+    let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
+
+    let ima_measured = match ecc::ima_measure_pubkey(&pubkey) {
+        Ok(()) => {
+            pr_info!("public key successfully measured by IMA\n");
+            true
+        }
+        Err(error) => {
+            // Keep the module available on kernels without an active IMA
+            // policy, but never allow such an unmeasured key to sign evidence.
+            pr_warn!(
+                "IMA measurement of public key failed; signing disabled: {:?}\n",
+                error
+            );
+            false
+        }
     };
 
-    let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
-    CURVE_N.populate(curve_n);
-
-    Ok(KeyPair { private, pubkey })
+    Ok(KeyPair {
+        private,
+        pubkey,
+        curve_n,
+        ima_measured,
+    })
 }
 
 /// taken from linux/fsverity.h
@@ -145,11 +170,16 @@ fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
         )
     };
     if ret < 0 {
-        return Err(EPERM);
-    } else if ret == 0 {
+        return Err(Error::from_errno(ret));
+    }
+    let size = ret as usize;
+    if size == 0 {
         return Err(ENOENT);
     }
-    digest.size = ret as usize;
+    if size > digest.buffer.len() {
+        return Err(EOVERFLOW);
+    }
+    digest.size = size;
     Ok(digest)
 }
 
@@ -193,12 +223,15 @@ pub(crate) fn handle_get_pubkey(arg: usize, cmd: u32) -> Result<isize> {
     let ptr = UserPtr::from_addr(arg);
     let mut writer = UserSlice::new(ptr, buf_size).writer();
     writer.write_slice(&kp.pubkey)?;
-    pr_info!("returned public key ({} bytes)\n", P256_PUBKEY_BYTES);
     Ok(P256_PUBKEY_BYTES as isize)
 }
 
 pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
     let buf_size = kernel::ioctl::_IOC_SIZE(cmd);
+    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
+    if !kp.ima_measured {
+        return Err(EPERM);
+    }
 
     let digest = current_exe_fsverity_digest()?;
     let digest = digest.digest();
@@ -211,8 +244,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 
     req.hash = ecc::sha256_hash(&to_sign[..to_sign_len]);
 
-    let kp = KEY_PAIR.as_ref().ok_or(ENXIO)?;
-    let (sig_r_limbs, sig_s_limbs) = ecdsa_sign(&to_sign[..to_sign_len], &kp.private)?;
+    let (sig_r_limbs, sig_s_limbs) = kp.sign(&to_sign[..to_sign_len])?;
     for (i, limb) in sig_r_limbs.iter().rev().enumerate() {
         req.sig_r[i * core::mem::size_of::<u64>()..(i + 1) * core::mem::size_of::<u64>()]
             .copy_from_slice(&limb.to_be_bytes());
@@ -225,6 +257,5 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
 
     write_sign_data_req(arg, buf_size, &req)?;
 
-    pr_info!("computed signature\n");
     Ok(0)
 }

@@ -6,7 +6,6 @@
 nix build .#default                                     # kernel module
 nix build .#app                                         # userspace app
 nix build .#checks.x86_64-linux.attestation             # two-machine NixOS VM test
-nix build .#checks.x86_64-linux.feature-lacking-kernel  # loads module on kernel w/o fs-verity
 nix build .#kernel-src                                  # minimal ~4.7 MB kernel Rust source tree
 nix develop                                             # dev shell (rust-src, rust-analyzer, python3 w/ cryptography)
 nix fmt                                                 # format using nixfmt-tree
@@ -17,10 +16,9 @@ Commands run in `nix develop` shell unless noted. The attestation test verifies 
 
 ## Architecture
 
-- **`driver/src/`**: Rust kernel module (`miscdevice`, `/dev/tarako`). Sub-files are `include!()`'d from `lib.rs` (not separate compiled units — Kbuild only lists `src/lib.o`). Generates ECDSA P-256 key pair on load, zeroizes private key on unload. The signing ioctl is guarded: the caller's exe must be fs-verity protected.
+- **`driver/src/`**: Rust kernel module (`miscdevice`, `/dev/tarako`). Sub-files are `include!()`'d from `lib.rs` (not separate compiled units — Kbuild only lists `src/lib.o`). Generates ECDSA P-256 key pair on load, zeroizes private key on unload. The signing ioctl is guarded: IMA must measure the generated key and the caller's exe must be fs-verity protected.
 - **`app/`**: standalone Cargo binary with `der` and `libc` crates. Uses hardcoded ioctl numbers matching the kernel module. Accepts up to 1024 bits of hex user data on the CLI; shorter values such as a nonce are zero-padded.
-- **`modules/`**: NixOS kernel config modules for `FS_VERITY` and `IMA`.
-- **`test/`**: NixOS VM test definitions (`attestation.nix`/`.py`, `feature-lacking-kernel.nix`/`.py`), plus TCP responder (`responder.py`, Flask) and client (`client.py`, requests).
+- **`test/`**: NixOS VM test definition (`attestation.nix`/`.py`), plus TCP responder (`responder.py`, Flask) and client (`client.py`, requests).
 
 Ioctls:
 | Constant | Code | Direction |

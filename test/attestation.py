@@ -31,8 +31,8 @@ for line in dmesg.split("\n"):
 assert "loading, generating ECDSA P-256 key pair" in dmesg
 assert "key pair generated, public key ready" in dmesg
 
-# Verify the public key was recorded in the IMA measurement log and
-# that the recorded digest matches SHA256 of the raw public key bytes.
+# Verify the public key was recorded in the IMA measurement log and that the
+# recorded digest matches the raw public key using the configured IMA hash.
 import time
 time.sleep(1)
 ima_log = attester.succeed("cat /sys/kernel/security/integrity/ima/ascii_runtime_measurements")
@@ -45,12 +45,12 @@ pkg_line = next(line for line in ima_log.strip().split("\n") if "public-key-gene
 parts = pkg_line.split()
 # Format: PCR template_hash template algo:digest event_name event_data
 ima_digest_full = parts[3]
-ima_digest_hex = ima_digest_full.split(":")[1]
+ima_algorithm, ima_digest_hex = ima_digest_full.split(":", 1)
 event_data_idx = parts.index("public-key-generate") + 1
 raw_pubkey_hex = parts[event_data_idx]
-ref_digest = hashlib.sha256(bytes.fromhex(raw_pubkey_hex)).hexdigest()
+ref_digest = hashlib.new(ima_algorithm, bytes.fromhex(raw_pubkey_hex)).hexdigest()
 assert ima_digest_hex == ref_digest, f"IMA digest mismatch: {ima_digest_hex} != {ref_digest}"
-print("IMA digest matches SHA256 of the raw public key")
+print(f"IMA digest matches {ima_algorithm} of the raw public key")
 
 # Set up fs-verity protected binary on attester.
 # The kernel module rejects ioctls from non-verity processes, so tarako-app
@@ -106,10 +106,10 @@ kernel_hash_hex = hash_line[5:].strip()
 ref_hash = hashlib.sha256(msg_raw).hexdigest()
 print("kernel hash:", kernel_hash_hex)
 print("reference hash:", ref_hash)
-if kernel_hash_hex != ref_hash:
-    print("Hash MISMATCH!")
-else:
-    print("Hash matches")
+assert kernel_hash_hex == ref_hash, (
+    f"kernel hash mismatch: {kernel_hash_hex} != {ref_hash}"
+)
+print("Hash matches")
 
 # Extract hex DER public key and signature from output
 out_lines = out.split("\n")

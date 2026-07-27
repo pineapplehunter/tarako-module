@@ -11,5 +11,4 @@ rustPlatform.buildRustPackage {
     ];
   };
   cargoLock.lockFile = ./Cargo.lock;
-  doCheck = false;
 }

@@ -48,7 +48,6 @@
               '';
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
-          checks.feature-lacking-kernel = pkgs.callPackage ./test/feature-lacking-kernel.nix { };
 
           devShells = {
             default = pkgs.mkShell {

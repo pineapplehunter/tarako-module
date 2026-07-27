@@ -42,6 +42,20 @@ impl<T> SetOnce<T> {
             false
         }
     }
+
+    /// Drops the stored value and makes the cell empty again.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no references returned by [`Self::as_ref`]
+    /// exist and that no other thread can access the cell until this method
+    /// returns.
+    pub(crate) unsafe fn clear(&self) {
+        if let Ok(2) = self.init.cmpxchg(2, 1, Acquire) {
+            unsafe { core::ptr::drop_in_place(self.value.get().cast::<T>()) };
+            self.init.store(0, Release);
+        }
+    }
 }
 
 impl<T> Drop for SetOnce<T> {

@@ -7,6 +7,7 @@ use crate::ffi;
 use core::cmp::Ordering;
 use core::ffi::{c_int, c_uint};
 use core::ops::{Add, Sub};
+use kernel::error::{code::EINVAL, Result};
 
 /// P-256 scalar / coordinate (4 limbs, 256 bits).
 pub(crate) type Scalar = Vli<P256_DIGITS>;
@@ -41,11 +42,11 @@ impl<const N: usize> Vli<N> {
     /// Add `right` with an initial `carry`, returning (sum, overflow).
     pub(crate) fn carrying_add(&self, right: &Self, mut carry: u64) -> (Self, u64) {
         let mut limbs = [0u64; N];
-        for i in 0..N {
-            let (s, c1) = self.0[i].overflowing_add(right.0[i]);
-            let (s, c2) = s.overflowing_add(carry);
-            limbs[i] = s;
-            carry = (c1 as u64) + (c2 as u64);
+        for ((result, left), right) in limbs.iter_mut().zip(&self.0).zip(&right.0) {
+            let (sum, left_carry) = left.overflowing_add(*right);
+            let (sum, carry_carry) = sum.overflowing_add(carry);
+            *result = sum;
+            carry = u64::from(left_carry) + u64::from(carry_carry);
         }
         (Vli(limbs), carry)
     }
@@ -76,17 +77,22 @@ impl<const N: usize> Vli<N> {
     // ── FFI-based operations (work for any N) ──
 
     /// Convert big-endian bytes to LE limbs.  `bytes` must be exactly `N * 8` bytes.
-    pub(crate) fn from_be_bytes(bytes: &[u8]) -> Self {
+    pub(crate) fn from_be_bytes(bytes: &[u8]) -> Result<Self> {
+        let expected_len = N.checked_mul(core::mem::size_of::<u64>()).ok_or(EINVAL)?;
+        if bytes.len() != expected_len {
+            return Err(EINVAL);
+        }
+
         let mut out = Vli::zero();
         unsafe {
             ffi::ecc_digits_from_bytes(
                 bytes.as_ptr(),
-                (N * 8) as c_uint,
+                expected_len as c_uint,
                 out.as_mut_ptr(),
                 N as c_uint,
             )
         };
-        out
+        Ok(out)
     }
 
     /// Modular inverse: `self^(-1) mod modulus`.
@@ -123,9 +129,10 @@ impl<const N: usize> Vli<N> {
 
 impl<const N: usize> Drop for Vli<N> {
     fn drop(&mut self) {
-        for limb in self.0.iter_mut() {
+        for limb in &mut self.0 {
             unsafe { core::ptr::write_volatile(limb, 0) };
         }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
 }
 

@@ -8,6 +8,7 @@
 use super::ffi;
 use crate::vli::Scalar;
 use core::ffi::{c_uint, c_ulong};
+use core::ptr::NonNull;
 use kernel::prelude::*;
 
 /// NIST P-256 curve identifier for kernel ECC helpers (`include/crypto/ecdh.h`).
@@ -26,12 +27,12 @@ pub(crate) const P256_PUBKEY_BYTES: usize = 1 + 2 * P256_BYTES;
 /// Kernel-allocated ECC point (separate x/y buffers, managed via
 /// `ecc_alloc_point` / `ecc_free_point`).  Freed and zeroed on drop.
 pub(crate) struct Point {
-    inner: *mut ffi::Point,
+    inner: NonNull<ffi::Point>,
 }
 
 impl Point {
     fn inner(&self) -> &ffi::Point {
-        unsafe { &*self.inner }
+        unsafe { self.inner.as_ref() }
     }
 
     /// Return the X coordinate as a copy-on-write Scalar.
@@ -54,7 +55,7 @@ impl Point {
 
 impl Drop for Point {
     fn drop(&mut self) {
-        unsafe { ffi::ecc_free_point(self.inner) };
+        unsafe { ffi::ecc_free_point(self.inner.as_ptr()) };
     }
 }
 
@@ -75,7 +76,7 @@ pub(crate) fn generate_private_key() -> Result<Scalar> {
     let mut key = Scalar::zero();
     let ret = unsafe { ffi::ecc_gen_privkey(P256, P256_DIGITS as c_uint, key.as_mut_ptr()) };
     if ret < 0 {
-        return Err(EINVAL);
+        return Err(Error::from_errno(ret));
     }
     Ok(key)
 }
@@ -84,9 +85,11 @@ pub(crate) fn generate_private_key() -> Result<Scalar> {
 /// `ecc_make_pub_key`, and copy the swapped output into the point's
 /// x / y buffers.
 pub(crate) fn make_public_key(privkey: &Scalar) -> Result<Point> {
-    let p = unsafe { ffi::ecc_alloc_point(P256_DIGITS as c_uint) };
-    if p.is_null() {
-        return Err(ENOMEM);
+    let p = NonNull::new(unsafe { ffi::ecc_alloc_point(P256_DIGITS as c_uint) }).ok_or(ENOMEM)?;
+    let point = unsafe { p.as_ref() };
+    if point.x.is_null() || point.y.is_null() {
+        unsafe { ffi::ecc_free_point(p.as_ptr()) };
+        return Err(EFAULT);
     }
 
     let mut raw = [0u64; 2 * P256_DIGITS];
@@ -99,13 +102,13 @@ pub(crate) fn make_public_key(privkey: &Scalar) -> Result<Point> {
         )
     };
     if ret < 0 {
-        unsafe { ffi::ecc_free_point(p) };
-        return Err(EINVAL);
+        unsafe { ffi::ecc_free_point(p.as_ptr()) };
+        return Err(Error::from_errno(ret));
     }
 
     unsafe {
-        core::ptr::copy_nonoverlapping(raw.as_ptr(), (*p).x, P256_DIGITS);
-        core::ptr::copy_nonoverlapping(raw.as_ptr().add(P256_DIGITS), (*p).y, P256_DIGITS);
+        core::ptr::copy_nonoverlapping(raw.as_ptr(), point.x, P256_DIGITS);
+        core::ptr::copy_nonoverlapping(raw.as_ptr().add(P256_DIGITS), point.y, P256_DIGITS);
     }
 
     Ok(Point { inner: p })

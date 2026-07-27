@@ -11,11 +11,11 @@
 //! 2. `TARAKO_GET_PUBKEY` (0x8041_5301) - return the raw ECDSA P-256 public key.
 //! 3. `TARAKO_SIGN_DATA` (0xC121_5302) - remote attestation: read the calling
 //!    process's fs-verity digest, compute
-//!    `ECDSA-SHA256(sk, SHA256(digest || user_data))` for 1024 bits of opaque
-//!    user data, and return the signature together with the public key.
+//!    `ECDSA-SHA256(sk, digest || user_data)` for 1024 bits of opaque user data,
+//!    and return the signature together with the public key.
 //!
-//! The signing ioctl rejects callers whose executable is NOT protected by
-//! fs-verity, binding each signature to the measured executable.
+//! The signing ioctl is enabled only when IMA measures the generated public
+//! key, and rejects callers whose executable is not protected by fs-verity.
 
 pub(crate) mod ecc {
     include!("ecc.rs");
@@ -54,10 +54,21 @@ module! {
     license: "GPL",
 }
 
+struct KeyCleanup;
+
+impl Drop for KeyCleanup {
+    fn drop(&mut self) {
+        // `_miscdev` is declared before this field and is therefore dropped
+        // first, preventing concurrent file operations during key destruction.
+        unsafe { KEY_PAIR.clear() };
+    }
+}
+
 #[pin_data]
 struct TarakoModule {
     #[pin]
     _miscdev: MiscDeviceRegistration<TarakoDevice>,
+    _key_cleanup: KeyCleanup,
 }
 
 impl kernel::InPlaceModule for TarakoModule {
@@ -69,23 +80,29 @@ impl kernel::InPlaceModule for TarakoModule {
         };
         try_pin_init!(Self {
             _miscdev <- {
-                let kp = generate_key_pair().map_err(|_| {
-                    pr_err!("failed to generate ECDSA key pair, aborting load\n");
-                    EINVAL
+                let kp = generate_key_pair().map_err(|error| {
+                    pr_err!("failed to initialize ECDSA key pair: {:?}\n", error);
+                    error
                 })?;
-                KEY_PAIR.populate(kp);
-                pr_info!("key pair generated, public key ready\n");
-                MiscDeviceRegistration::register(options)
+                MiscDeviceRegistration::register(options).pin_chain(move |_| {
+                    if !KEY_PAIR.populate(kp) {
+                        pr_err!("key pair was already initialized\n");
+                        return Err(EBUSY);
+                    }
+                    pr_info!("key pair generated, public key ready\n");
+                    Ok(())
+                })
             },
+            _key_cleanup: KeyCleanup,
         })
     }
 }
 
 // ── /dev/tarako miscdevice ──
 
-#[pin_data(PinnedDrop)]
+#[pin_data]
 pub(crate) struct TarakoDevice {
-    dev: ARef<Device>,
+    _dev: ARef<Device>,
 }
 
 #[vtable]
@@ -94,30 +111,16 @@ impl MiscDevice for TarakoDevice {
 
     fn open(_file: &File, misc: &MiscDeviceRegistration<Self>) -> Result<Pin<KBox<Self>>> {
         let dev = ARef::from(misc.device());
-        pr_info!("opened\n");
-        KBox::try_pin_init(try_pin_init! { TarakoDevice { dev: dev } }, GFP_KERNEL)
+        KBox::try_pin_init(try_pin_init! { TarakoDevice { _dev: dev } }, GFP_KERNEL)
     }
 
     fn ioctl(_me: Pin<&TarakoDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
         match cmd {
-            TARAKO_HELLO => {
-                pr_info!("hello from ioctl\n");
-                Ok(0)
-            }
+            TARAKO_HELLO => Ok(0),
             TARAKO_GET_PUBKEY => handle_get_pubkey(arg, cmd),
             TARAKO_SIGN_DATA => handle_sign_data(arg, cmd),
-            _ => {
-                pr_info!("unknown ioctl 0x{:x}\n", cmd);
-                Err(ENOTTY)
-            }
+            _ => Err(ENOTTY)
         }
-    }
-}
-
-#[pinned_drop]
-impl PinnedDrop for TarakoDevice {
-    fn drop(self: Pin<&mut Self>) {
-        pr_info!("goodbye!\n");
     }
 }
 

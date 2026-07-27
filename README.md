@@ -26,7 +26,7 @@ A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it
 | `TARAKO_GET_PUBKEY` | `0x8041_5301` | Return the raw ECDSA P-256 public key (65 bytes) |
 | `TARAKO_SIGN_DATA` | `0xC121_5302` | Sign `SHA256(fsverity_digest \|\| user_data)` with ECDSA P-256; `user_data` is 128 bytes |
 
-The signing ioctl is guarded: only processes whose executable is protected by **fs-verity** may call it. This binds the signature to the measured executable and caller-supplied data.
+The signing ioctl is guarded: the generated public key must have been measured successfully by **IMA**, and the caller's executable must be protected by **fs-verity**. This binds the signature to a remotely verifiable key, the measured executable, and caller-supplied data.
 
 ## Components
 
@@ -35,8 +35,6 @@ The signing ioctl is guarded: only processes whose executable is protected by **
 | `driver/src/` | Kernel module (Rust, `rust/kernel` framework) — multi-file layout |
 | `app/src/main.rs` | Userspace `tarako-app` — opens `/dev/tarako` and issues ioctls |
 | `test/attestation.py` | Two-machine NixOS VM integration test |
-| `test/feature-lacking-kernel.py` | Verifies module loads on kernels without fs-verity |
-| `modules/` | NixOS modules enabling `FS_VERITY` and `IMA` kernel config |
 
 ## Build & Test
 
@@ -49,9 +47,6 @@ nix build .#app
 
 # NixOS VM attestation test
 nix build .#checks.x86_64-linux.attestation
-
-# Feature-lacking kernel test
-nix build .#checks.x86_64-linux.feature-lacking-kernel
 
 # Dev shell with Rust + rust-src
 nix develop
