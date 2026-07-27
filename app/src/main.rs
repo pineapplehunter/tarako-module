@@ -1,9 +1,9 @@
-// signer-app — userspace client for the signer kernel module.
+// tarako-app — userspace client for the tarako kernel module.
 //
-// Opens /dev/signer and issues three ioctls in sequence:
-//   1. SIGNER_HELLO       — sanity check
-//   2. SIGNER_GET_PUBKEY  — retrieve the raw ECDSA P-256 public key (65 bytes)
-//   3. SIGNER_SIGN_DATA   — remote attestation: signs SHA256(fsverity_digest || nonce)
+// Opens /dev/tarako and issues three ioctls in sequence:
+//   1. TARAKO_HELLO       — sanity check
+//   2. TARAKO_GET_PUBKEY  — retrieve the raw ECDSA P-256 public key (65 bytes)
+//   3. TARAKO_SIGN_DATA   — remote attestation: signs SHA256(fsverity_digest || nonce)
 //
 // The nonce can be provided as a 64-hex-char command-line argument.
 // Without an argument, a hardcoded nonce is used (for testing).
@@ -14,9 +14,9 @@ use der::asn1::{BitString, ObjectIdentifier, UintRef};
 use der::{Encode, SliceWriter, Tag};
 use std::os::unix::io::AsRawFd;
 
-const SIGNER_HELLO: libc::c_ulong = 0x0000_5300;
-const SIGNER_GET_PUBKEY: libc::c_ulong = 0x8041_5301;
-const SIGNER_SIGN_DATA: libc::c_ulong = 0xC0C1_5302;
+const TARAKO_HELLO: libc::c_ulong = 0x0000_5300;
+const TARAKO_GET_PUBKEY: libc::c_ulong = 0x8041_5301;
+const TARAKO_SIGN_DATA: libc::c_ulong = 0xC0C1_5302;
 
 #[repr(C)]
 struct SignDataReq {
@@ -112,32 +112,32 @@ fn main() {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/signer")
-        .expect("failed to open /dev/signer");
+        .open("/dev/tarako")
+        .expect("failed to open /dev/tarako");
     let fd = file.as_raw_fd();
 
     // 1. Hello — verify the device is responsive
-    println!("=== SIGNER_HELLO ===");
-    let ret = unsafe { libc::ioctl(fd, SIGNER_HELLO as _) };
+    println!("=== TARAKO_HELLO ===");
+    let ret = unsafe { libc::ioctl(fd, TARAKO_HELLO as _) };
     if ret < 0 {
-        eprintln!("SIGNER_HELLO failed: {}", std::io::Error::last_os_error());
+        eprintln!("TARAKO_HELLO failed: {}", std::io::Error::last_os_error());
         std::process::exit(1);
     }
     println!("ioctl return: {ret}\n");
 
     // 2. Get public key — retrieve the raw ECDSA P-256 public key
-    println!("=== SIGNER_GET_PUBKEY ===");
+    println!("=== TARAKO_GET_PUBKEY ===");
     let mut pubkey = [0u8; 65];
     let ret = unsafe {
         libc::ioctl(
             fd,
-            SIGNER_GET_PUBKEY as _,
+            TARAKO_GET_PUBKEY as _,
             pubkey.as_mut_ptr() as *mut libc::c_void,
         )
     };
     if ret < 0 {
         eprintln!(
-            "SIGNER_GET_PUBKEY failed: {}",
+            "TARAKO_GET_PUBKEY failed: {}",
             std::io::Error::last_os_error()
         );
         std::process::exit(1);
@@ -149,7 +149,7 @@ fn main() {
     println!("{}", hex(&der));
 
     // 3. Sign — kernel computes ECDSA(sk, SHA256(fsverity_digest || nonce))
-    println!("=== SIGNER_SIGN_DATA ===");
+    println!("=== TARAKO_SIGN_DATA ===");
     let mut req = SignDataReq {
         nonce,
         hash: [0u8; 32],
@@ -160,13 +160,13 @@ fn main() {
     let ret = unsafe {
         libc::ioctl(
             fd,
-            SIGNER_SIGN_DATA as _,
+            TARAKO_SIGN_DATA as _,
             &mut req as *mut _ as *mut libc::c_void,
         )
     };
     if ret < 0 {
         eprintln!(
-            "SIGNER_SIGN_DATA failed: {}",
+            "TARAKO_SIGN_DATA failed: {}",
             std::io::Error::last_os_error()
         );
         std::process::exit(1);

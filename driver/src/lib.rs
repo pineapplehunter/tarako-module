@@ -5,11 +5,11 @@
 //! # Security model
 //!
 //! The kernel is the only trusted entity. On load it generates an ECDSA P-256
-//! key pair and exposes it through `/dev/signer` via three ioctls:
+//! key pair and exposes it through `/dev/tarako` via three ioctls:
 //!
-//! 1. `SIGNER_HELLO` (0x0000_5300) - sanity check.
-//! 2. `SIGNER_GET_PUBKEY` (0x8041_5301) - return the raw ECDSA P-256 public key.
-//! 3. `SIGNER_SIGN_DATA` (0xC0C1_5302) - remote attestation: read the calling
+//! 1. `TARAKO_HELLO` (0x0000_5300) - sanity check.
+//! 2. `TARAKO_GET_PUBKEY` (0x8041_5301) - return the raw ECDSA P-256 public key.
+//! 3. `TARAKO_SIGN_DATA` (0xC0C1_5302) - remote attestation: read the calling
 //!    process's fs-verity digest, compute `ECDSA-SHA256(sk, SHA256(digest || nonce))`,
 //!    and return the signature together with the public key.
 //!
@@ -40,31 +40,31 @@ use kernel::prelude::*;
 use kernel::sync::aref::ARef;
 
 use crate::ioctl::{
-    generate_key_pair, handle_get_pubkey, handle_sign_data, KeyPair, SIGNER_GET_PUBKEY,
-    SIGNER_HELLO, SIGNER_SIGN_DATA,
+    generate_key_pair, handle_get_pubkey, handle_sign_data, KeyPair, TARAKO_GET_PUBKEY,
+    TARAKO_HELLO, TARAKO_SIGN_DATA,
 };
 use crate::set_once::SetOnce;
 
 module! {
-    type: SignerModule,
-    name: "signer",
+    type: TarakoModule,
+    name: "tarako",
     authors: ["Shogo Takata"],
-    description: "A signer kernel module with chrdev and ioctl",
+    description: "A tarako kernel module with chrdev and ioctl",
     license: "GPL",
 }
 
 #[pin_data]
-struct SignerModule {
+struct TarakoModule {
     #[pin]
-    _miscdev: MiscDeviceRegistration<SignerDevice>,
+    _miscdev: MiscDeviceRegistration<TarakoDevice>,
 }
 
-impl kernel::InPlaceModule for SignerModule {
+impl kernel::InPlaceModule for TarakoModule {
     fn init(_module: &'static ThisModule) -> impl PinInit<Self, Error> {
         pr_info!("loading, generating ECDSA P-256 key pair\n");
 
         let options = MiscDeviceOptions {
-            name: kernel::c_str!("signer"),
+            name: kernel::c_str!("tarako"),
         };
         try_pin_init!(Self {
             _miscdev <- {
@@ -80,31 +80,31 @@ impl kernel::InPlaceModule for SignerModule {
     }
 }
 
-// ── /dev/signer miscdevice ──
+// ── /dev/tarako miscdevice ──
 
 #[pin_data(PinnedDrop)]
-pub(crate) struct SignerDevice {
+pub(crate) struct TarakoDevice {
     dev: ARef<Device>,
 }
 
 #[vtable]
-impl MiscDevice for SignerDevice {
+impl MiscDevice for TarakoDevice {
     type Ptr = Pin<KBox<Self>>;
 
     fn open(_file: &File, misc: &MiscDeviceRegistration<Self>) -> Result<Pin<KBox<Self>>> {
         let dev = ARef::from(misc.device());
         pr_info!("opened\n");
-        KBox::try_pin_init(try_pin_init! { SignerDevice { dev: dev } }, GFP_KERNEL)
+        KBox::try_pin_init(try_pin_init! { TarakoDevice { dev: dev } }, GFP_KERNEL)
     }
 
-    fn ioctl(_me: Pin<&SignerDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
+    fn ioctl(_me: Pin<&TarakoDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
         match cmd {
-            SIGNER_HELLO => {
+            TARAKO_HELLO => {
                 pr_info!("hello from ioctl\n");
                 Ok(0)
             }
-            SIGNER_GET_PUBKEY => handle_get_pubkey(arg, cmd),
-            SIGNER_SIGN_DATA => handle_sign_data(arg, cmd),
+            TARAKO_GET_PUBKEY => handle_get_pubkey(arg, cmd),
+            TARAKO_SIGN_DATA => handle_sign_data(arg, cmd),
             _ => {
                 pr_info!("unknown ioctl 0x{:x}\n", cmd);
                 Err(ENOTTY)
@@ -114,7 +114,7 @@ impl MiscDevice for SignerDevice {
 }
 
 #[pinned_drop]
-impl PinnedDrop for SignerDevice {
+impl PinnedDrop for TarakoDevice {
     fn drop(self: Pin<&mut Self>) {
         pr_info!("goodbye!\n");
     }

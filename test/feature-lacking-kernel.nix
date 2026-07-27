@@ -1,15 +1,15 @@
 { lib, testers }:
 testers.runNixOSTest {
-  name = "signer-feature-lacking-kernel";
+  name = "tarako-feature-lacking-kernel";
 
   nodes.machine =
     { config, pkgs, ... }:
     let
-      signer-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
+      tarako-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
     in
     {
       boot.kernelPackages = pkgs.linuxPackages;
-      boot.extraModulePackages = [ signer-mod ];
+      boot.extraModulePackages = [ tarako-mod ];
       environment.systemPackages = [
         pkgs.python3
         (pkgs.pkgsStatic.callPackage ../app/package.nix { })

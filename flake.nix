@@ -11,7 +11,10 @@
   outputs =
     { flake-parts, ... }@inputs:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "aarch64-linux" "x86_64-linux" ];
+      systems = [
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
 
       perSystem =
         {
@@ -29,7 +32,9 @@
           };
 
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
+          packages.latest = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
           packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
+          packages.ima-rtmr-kernel = pkgs.callPackage ./kernel/ima-rtmr-kernel.nix { };
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
           packages.kernel-src =
@@ -45,26 +50,31 @@
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
           checks.feature-lacking-kernel = pkgs.callPackage ./test/feature-lacking-kernel.nix { };
 
-          devShells.default = pkgs.mkShell {
-            packages = with pkgs; [
-              (python3.withPackages (ps: [ ps.cryptography ]))
-              rustPlatform.bindgenHook
-              (rust-bin.stable.latest.default.override {
-                extensions = [
-                  "rust-src"
-                  "rust-analyzer"
-                ];
-                targets = [ ];
-              })
-            ];
+          devShells = {
+            default = pkgs.mkShell {
+              packages = with pkgs; [
+                (python3.withPackages (ps: [ ps.cryptography ]))
+                rustPlatform.bindgenHook
+                (rust-bin.stable.latest.default.override {
+                  extensions = [
+                    "rust-src"
+                    "rust-analyzer"
+                  ];
+                  targets = [ ];
+                })
+              ];
 
-            RUST_KERNEL_SRCTREE = "${self'.packages.kernel-src}";
-            RUST_KERNEL_OBJTREE = "${pkgs.linuxPackages.kernel.dev}/lib/modules/${pkgs.linuxPackages.kernel.modDirVersion}/build";
+              RUST_KERNEL_SRCTREE = "${self'.packages.kernel-src}";
+              RUST_KERNEL_OBJTREE = "${pkgs.linuxPackages.kernel.dev}/lib/modules/${pkgs.linuxPackages.kernel.modDirVersion}/build";
 
-            shellHook = ''
-              export RUST_SYSROOT="$(rustc --print sysroot)"
-              export RUST_LIB_SRC="$RUST_SYSROOT/lib/rustlib/src/rust/library"
-            '';
+              shellHook = ''
+                export RUST_SYSROOT="$(rustc --print sysroot)"
+                export RUST_LIB_SRC="$RUST_SYSROOT/lib/rustlib/src/rust/library"
+              '';
+            };
+            localbuild = pkgs.mkShell {
+              packages = with pkgs; [ rustc ];
+            };
           };
 
           formatter = pkgs.nixfmt-tree;

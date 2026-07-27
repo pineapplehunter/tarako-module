@@ -1,12 +1,12 @@
 # Remote attestation integration test.
 #
 # Flow:
-#   1. Attester VM boots, loads the signer module, creates a verity-protected
-#      copy of signer-app, and starts a TCP responder on port 9999.
+#   1. Attester VM boots, loads the tarako module, creates a verity-protected
+#      copy of tarako-app, and starts a TCP responder on port 9999.
 #   2. Verifier VM boots, generates a random 32-byte nonce, and sends it to
 #      the attester over TCP.
-#   3. Attester's responder runs `/mnt/signer-app <nonce_hex>`, which calls the
-#      SIGNER_SIGN_DATA ioctl.  The kernel signs SHA256(fsverity_digest || nonce)
+#   3. Attester's responder runs `/mnt/tarako-app <nonce_hex>`, which calls the
+#      TARAKO_SIGN_DATA ioctl.  The kernel signs SHA256(fsverity_digest || nonce)
 #      and returns (hash, sig_r, sig_s, pubkey).
 #   4. Verifier prints the response, which the test driver captures.
 #   5. Test driver verifies:
@@ -20,7 +20,7 @@ start_all()
 attester.wait_for_unit("default.target")
 
 attester.succeed("modprobe ecc 2>/dev/null || true")
-attester.succeed("modprobe signer")
+attester.succeed("modprobe tarako")
 
 dmesg = attester.succeed("dmesg")
 for line in dmesg.split("\n"):
@@ -52,20 +52,20 @@ assert ima_digest_hex == ref_digest, f"IMA digest mismatch: {ima_digest_hex} != 
 print("IMA digest matches SHA256 of the raw public key")
 
 # Set up fs-verity protected binary on attester.
-# The kernel module rejects ioctls from non-verity processes, so signer-app
+# The kernel module rejects ioctls from non-verity processes, so tarako-app
 # must be on a verity-protected filesystem.
 attester.succeed("dd if=/dev/zero of=/tmp/verity.img bs=1M count=64")
 attester.succeed("mkfs.ext4 -O verity /tmp/verity.img")
 attester.succeed("mkdir -p /mnt && mount /tmp/verity.img /mnt")
-attester.succeed("cp $(which signer-app) /mnt/")
-attester.succeed("fsverity enable --block-size=1024 /mnt/signer-app")
+attester.succeed("cp $(which tarako-app) /mnt/")
+attester.succeed("fsverity enable --block-size=1024 /mnt/tarako-app")
 
-fsverity_out = attester.succeed("fsverity measure /mnt/signer-app")
+fsverity_out = attester.succeed("fsverity measure /mnt/tarako-app")
 fsverity_digest_hex = fsverity_out.strip().split()[0].split(":")[1]
 print("fs-verity digest hex:", fsverity_digest_hex)
 
 # Start TCP responder on attester (background).
-attester.succeed("nohup signer-responder > /tmp/responder.log 2>&1 &")
+attester.succeed("nohup tarako-responder > /tmp/responder.log 2>&1 &")
 
 # Attester is reachable by its node name in the VM network
 attester_ip = "attester"
@@ -78,14 +78,14 @@ nonce = os.urandom(32)
 nonce_hex = binascii.hexlify(nonce).decode()
 print("verifier nonce:", nonce_hex)
 
-out = verifier.succeed(f"signer-client {attester_ip} {nonce_hex}")
+out = verifier.succeed(f"tarako-client {attester_ip} {nonce_hex}")
 print(out)
 
 # ===== Phase 3: Cryptographic verification via openssl =====
 
-assert "SIGNER_HELLO" in out
-assert "SIGNER_GET_PUBKEY" in out
-assert "SIGNER_SIGN_DATA" in out
+assert "TARAKO_HELLO" in out
+assert "TARAKO_GET_PUBKEY" in out
+assert "TARAKO_SIGN_DATA" in out
 assert "public key (65 bytes) DER:" in out
 
 # Verify nonce in response matches what verifier sent

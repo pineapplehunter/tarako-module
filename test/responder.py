@@ -8,7 +8,7 @@ app = Flask(__name__)
 @app.route("/sign", methods=["POST"])
 def sign():
     nonce_hex = request.json["nonce"]
-    result = subprocess.check_output(["/mnt/signer-app", nonce_hex])
+    result = subprocess.check_output(["/mnt/tarako-app", nonce_hex])
     return result, 200, {"Content-Type": "text/plain"}
 
 

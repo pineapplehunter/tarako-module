@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""generate_rust_analyzer - Generates rust-project.json for the signer kernel module.
+"""generate_rust_analyzer - Generates rust-project.json for the tarako kernel module.
 
 Usage (from the nix devShell):
     python3 generate_rust_analyzer.py > rust-project.json
@@ -217,11 +217,11 @@ def main():
     uapi     = generated_crate("uapi", [core, ffi, pin_init])
     kernel   = generated_crate("kernel", [core, macros, build_error, pin_init, ffi, bindings, uapi])
 
-    # ── 3. External module crate: signer ────────────────────────────
-    signer_root = EXTMOD / "src/lib.rs"
+    # ── 3. External module crate: tarako ────────────────────────────
+    tarako_root = EXTMOD / "src/lib.rs"
     reg(make_crate(
-        "signer",
-        signer_root,
+        "tarako",
+        tarako_root,
         [core, kernel, pin_init],
         cfg=generated_cfg,
         is_workspace_member=True,

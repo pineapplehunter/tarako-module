@@ -1,15 +1,15 @@
 { lib, testers }:
 testers.runNixOSTest {
-  name = "signer-attestation";
+  name = "tarako-attestation";
 
   nodes = {
     attester =
       { config, pkgs, ... }:
       let
-        signer-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
-        signer-app = pkgs.pkgsStatic.callPackage ../app/package.nix { };
+        tarako-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
+        tarako-app = pkgs.pkgsStatic.callPackage ../app/package.nix { };
 
-        signer-responder = pkgs.writers.writePython3Bin "signer-responder" {
+        tarako-responder = pkgs.writers.writePython3Bin "tarako-responder" {
           libraries = [ pkgs.python3Packages.flask ];
         } ./responder.py;
       in
@@ -23,12 +23,12 @@ testers.runNixOSTest {
         custom.ima.enable = true;
 
         boot.kernelPackages = pkgs.linuxPackages_latest;
-        boot.extraModulePackages = [ signer-mod ];
+        boot.extraModulePackages = [ tarako-mod ];
         boot.kernelParams = [ "ima_policy=critical_data" ];
-        # signer is loaded manually in the test after IMA policy is set
+        # tarako is loaded manually in the test after IMA policy is set
         environment.systemPackages = [
-          signer-app
-          signer-responder
+          tarako-app
+          tarako-responder
           pkgs.openssl
           pkgs.python3
         ];
@@ -44,12 +44,12 @@ testers.runNixOSTest {
     verifier =
       { pkgs, ... }:
       let
-        signer-client = pkgs.writers.writePython3Bin "signer-client" {
+        tarako-client = pkgs.writers.writePython3Bin "tarako-client" {
           libraries = [ pkgs.python3Packages.requests ];
         } (builtins.readFile ./client.py);
       in
       {
-        environment.systemPackages = [ signer-client ];
+        environment.systemPackages = [ tarako-client ];
       };
   };
 

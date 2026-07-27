@@ -4,7 +4,7 @@
   lib,
 }:
 stdenv.mkDerivation {
-  pname = "signer-module";
+  pname = "tarako-module";
   version = kernel.version;
 
   src = lib.fileset.toSource {

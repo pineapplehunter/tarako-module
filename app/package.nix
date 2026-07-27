@@ -1,6 +1,6 @@
 { rustPlatform, lib }:
 rustPlatform.buildRustPackage {
-  pname = "signer-app";
+  pname = "tarako-app";
   version = "0.1.0";
   src = lib.fileset.toSource {
     root = ./.;

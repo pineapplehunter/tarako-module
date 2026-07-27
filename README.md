@@ -1,6 +1,6 @@
-# signer — Remote Attestation with an ECDSA P-256 Kernel Module
+# tarako — Remote Attestation with an ECDSA P-256 Kernel Module
 
-A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it via `/dev/signer`, and signs a measurement of the calling process (its fs-verity digest) bound to a challenge nonce. This enables **remote attestation**: a remote verifier sends a random nonce, and the kernel returns a signature that proves the exact code is running unmodified.
+A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it via `/dev/tarako`, and signs a measurement of the calling process (its fs-verity digest) bound to a challenge nonce. This enables **remote attestation**: a remote verifier sends a random nonce, and the kernel returns a signature that proves the exact code is running unmodified.
 
 ## Architecture
 
@@ -9,22 +9,22 @@ A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it
 │  Verifier   │ ──────────────────► │  Attester    │
 │ (challenger)│                     │ (kernel mod) │
 │             │ ◄────────────────── │              │
-│             │  sig + pubkey       │  /dev/signer │
+│             │  sig + pubkey       │  /dev/tarako │
 └─────────────┘                     └──────────────┘
 ```
 
 **Attester** (runs the kernel module):
-1. Loads `signer` module — ECDSA P-256 key pair is generated in kernel space.
+1. Loads `tarako` module — ECDSA P-256 key pair is generated in kernel space.
 2. The private key never leaves the kernel and is zeroized on module unload.
-3. A TCP responder accepts nonces from the network, calls `SIGNER_SIGN_DATA`, and returns the signature.
+3. A TCP responder accepts nonces from the network, calls `TARAKO_SIGN_DATA`, and returns the signature.
 
 **Kernel module (`driver/src/`)** — three ioctls:
 
 | Ioctl | Code | Description |
 |-------|------|-------------|
-| `SIGNER_HELLO` | `0x0000_5300` | Sanity check |
-| `SIGNER_GET_PUBKEY` | `0x8041_5301` | Return the raw ECDSA P-256 public key (65 bytes) |
-| `SIGNER_SIGN_DATA` | `0xC0C1_5302` | Sign `SHA256(fsverity_digest \|\| nonce)` with ECDSA P-256 |
+| `TARAKO_HELLO` | `0x0000_5300` | Sanity check |
+| `TARAKO_GET_PUBKEY` | `0x8041_5301` | Return the raw ECDSA P-256 public key (65 bytes) |
+| `TARAKO_SIGN_DATA` | `0xC0C1_5302` | Sign `SHA256(fsverity_digest \|\| nonce)` with ECDSA P-256 |
 
 All ioctls are guarded: only processes whose executable is protected by **fs-verity** may call them. This ensures the measured code path is authentic.
 
@@ -33,7 +33,7 @@ All ioctls are guarded: only processes whose executable is protected by **fs-ver
 | Path | Role |
 |------|------|
 | `driver/src/` | Kernel module (Rust, `rust/kernel` framework) — multi-file layout |
-| `app/src/main.rs` | Userspace `signer-app` — opens `/dev/signer` and issues ioctls |
+| `app/src/main.rs` | Userspace `tarako-app` — opens `/dev/tarako` and issues ioctls |
 | `test/attestation.py` | Two-machine NixOS VM integration test |
 | `test/feature-lacking-kernel.py` | Verifies module loads on kernels without fs-verity |
 | `modules/` | NixOS modules enabling `FS_VERITY` and `IMA` kernel config |
@@ -58,13 +58,13 @@ nix develop
 ```
 
 The integration test creates two VMs:
-- **attester**: loads the module, creates a verity-protected ext4 image, runs `signer-app` from it, and exposes a TCP responder.
+- **attester**: loads the module, creates a verity-protected ext4 image, runs `tarako-app` from it, and exposes a TCP responder.
 - **verifier**: generates a random nonce, sends it to the attester over TCP, receives the signature, and the test driver verifies it cryptographically with the `cryptography` Python library.
 
 ## How the signing works
 
 1. On load, the module generates an ECDSA P-256 key pair. The curve order `n` is cached.
-2. When `SIGNER_SIGN_DATA` is called, the kernel:
+2. When `TARAKO_SIGN_DATA` is called, the kernel:
    - Reads the calling process's fs-verity digest (SHA-256 of the file's Merkle tree root) using `get_task_exe_file`.
    - Concatenates it with the 32-byte nonce from userspace.
    - Computes `SHA256(digest || nonce)` and reduces it modulo `n`.

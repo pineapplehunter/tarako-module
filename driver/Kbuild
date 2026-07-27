@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0
 
-obj-m := signer.o
-signer-y := src/lib.o
+obj-m := tarako.o
+tarako-y := src/lib.o

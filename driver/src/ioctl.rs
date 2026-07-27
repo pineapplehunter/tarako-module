@@ -13,14 +13,14 @@ use kernel::prelude::*;
 use kernel::uaccess::{UserPtr, UserSlice};
 
 #[cfg(target_endian = "big")]
-compile_error!("signer module requires little-endian target");
+compile_error!("tarako module requires little-endian target");
 
 pub(crate) static CURVE_N: SetOnce<Scalar> = SetOnce::new();
 
 // ioctl command numbers: type 'S' (0x53), sequence 0..2
-pub(crate) const SIGNER_HELLO: u32 = _IO('S' as u32, 0x00);
-pub(crate) const SIGNER_GET_PUBKEY: u32 = _IOR::<[u8; P256_PUBKEY_BYTES]>('S' as u32, 0x01);
-pub(crate) const SIGNER_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
+pub(crate) const TARAKO_HELLO: u32 = _IO('S' as u32, 0x00);
+pub(crate) const TARAKO_GET_PUBKEY: u32 = _IOR::<[u8; P256_PUBKEY_BYTES]>('S' as u32, 0x01);
+pub(crate) const TARAKO_SIGN_DATA: u32 = _IOWR::<SignDataReq>('S' as u32, 0x02);
 
 #[repr(C)]
 pub(crate) struct SignDataReq {
