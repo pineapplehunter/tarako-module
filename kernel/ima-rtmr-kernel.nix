@@ -1,14 +1,7 @@
-{
-  lib,
-  stdenvNoCC,
-  linuxPackages_latest,
-  fetchFromGitHub,
-}:
+{ lib, pkgs, ... }:
 
 let
-  baseKernel = linuxPackages_latest.kernel;
-
-  imaRtmrSrc = fetchFromGitHub {
+  imaRtmrSrc = pkgs.fetchFromGitHub {
     owner = "acompany-develop";
     repo = "ima-rtmr-extend";
     rev = "33101a9db9fcf1a7172aaede8fd943817d836941";
@@ -17,7 +10,7 @@ let
 
   patchVersion = "7.0";
 
-  imaRtmrPatch = stdenvNoCC.mkDerivation {
+  imaRtmrPatch = pkgs.stdenvNoCC.mkDerivation {
     pname = "ima-rtmr-kernel.patch";
     version = imaRtmrSrc.rev;
 
@@ -32,9 +25,7 @@ let
       out_dir="security/integrity/ima_rtmr"
       work="$(mktemp -d)"
 
-      rm -rf "$out"
       touch "$out"
-
       cp "${imaRtmrSrc}/kernel/patches/${patchVersion}/kconfig.patch" "$out"
       printf '\n' >> "$out"
       cat "${imaRtmrSrc}/kernel/patches/${patchVersion}/makefile.patch" >> "$out"
@@ -51,8 +42,8 @@ let
     '';
   };
 in
-baseKernel.override {
-  kernelPatches = baseKernel.kernelPatches ++ [
+{
+  boot.kernelPatches = [
     {
       name = "ima-rtmr";
       patch = imaRtmrPatch;
@@ -72,10 +63,6 @@ baseKernel.override {
         KPROBES = yes;
         KRETPROBES = yes;
         TDX_GUEST_DRIVER = module;
-      };
-      features = {
-        ima = true;
-        imaRtmr = true;
       };
     }
   ];

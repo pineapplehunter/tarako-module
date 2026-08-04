@@ -48,6 +48,9 @@ nix build .#app
 # NixOS VM attestation test
 nix build .#checks.x86_64-linux.attestation
 
+# Build (but do not run) the TDX test driver
+nix build .#tdx-test-driver
+
 # Dev shell with Rust + rust-src
 nix develop
 ```
@@ -55,6 +58,18 @@ nix develop
 The integration test creates two VMs:
 - **attester**: loads the module, creates a verity-protected ext4 image, runs `tarako-app` from it, and exposes a TCP responder.
 - **verifier**: generates a random nonce, sends it to the attester over TCP, receives the signature, and verifies it with OpenSSL. The app zero-pads the nonce to the 128-byte ioctl input.
+
+### Running the test on TDX
+
+Build the driver without running the VM in the Nix build sandbox, then execute it on the TDX host:
+
+```sh
+nix build .#tdx-test-driver
+TDX_QEMU=/home/takata/tdx/qemu/build/qemu-system-x86_64 \
+  ./result/bin/nixos-test-driver
+```
+
+The host must have KVM access and a quote-generation service listening on vsock CID 2, port 4050. The attester is direct-booted with the kernel and initramfs (no OVMF), uses 4 CPUs and 4 GiB RAM, and gets a CRB vTPM backed by `swtpm`. Its TPM state is kept in `tarako-attestation-tdx-attester-swtpm` by default; set `NIX_SWTPM_DIR` to choose another location. Extra test-driver options, such as `--keep-machine-state`, can be passed normally.
 
 ## How the signing works
 

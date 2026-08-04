@@ -20,7 +20,7 @@ That repository does not claim the patch came from Intel. Its files are copyrigh
 
 ## Patch Used
 
-The project flake now includes an experimental package named `ima-rtmr-kernel`.
+The project includes the experimental NixOS module `kernel/ima-rtmr-kernel.nix`.
 
 It fetches `acompany-develop/ima-rtmr-extend` at:
 
@@ -28,9 +28,9 @@ It fetches `acompany-develop/ima-rtmr-extend` at:
 33101a9db9fcf1a7172aaede8fd943817d836941
 ```
 
-The Nix package converts the repository's `src/` files plus its Kconfig/Makefile patches into a Linux kernel patch and applies it through Nixpkgs `kernelPatches`.
+The module converts the repository's `src/` files plus its Kconfig/Makefile patches into a Linux kernel patch and applies it through `boot.kernelPatches`.
 
-The package enables these relevant kernel options:
+The module enables these relevant kernel options:
 
 ```text
 CONFIG_IMA=y
@@ -42,23 +42,13 @@ CONFIG_TDX_GUEST_DRIVER=m
 
 ## Build Instructions
 
-Build the patched kernel with:
+The TDX test's attester imports the module. Build its test driver, including the patched kernel, with:
 
 ```sh
-nix build .#ima-rtmr-kernel
+nix build .#tdx-test-driver
 ```
 
-Build only the generated kernel config with:
-
-```sh
-nix build --impure --expr '(builtins.getFlake "git+file:///home/takata/work/signer-module").packages.x86_64-linux.ima-rtmr-kernel.configfile'
-```
-
-Check the key config symbols after building the config:
-
-```sh
-rg '^CONFIG_(IMA_RTMR|IMA=|TDX_GUEST_DRIVER|TSM_MEASUREMENTS|KRETPROBES)' result
-```
+Other NixOS configurations can apply the patch by importing `kernel/ima-rtmr-kernel.nix` and selecting a compatible kernel through `boot.kernelPackages`.
 
 In my test, the full kernel build succeeded for Nixpkgs Linux `7.1.1` and produced:
 

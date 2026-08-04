@@ -123,7 +123,7 @@ pub(crate) fn sha256_hash(data: &[u8]) -> [u8; P256_BYTES] {
 pub(crate) fn ima_measure_pubkey(bytes: &[u8]) -> Result {
     let result = unsafe {
         ffi::ima_measure_critical_data(
-            c"tarako_key".as_ptr() as *const i8,
+            c"tarako_pubkey".as_ptr() as *const i8,
             c"public-key-generate".as_ptr() as *const i8,
             bytes.as_ptr(),
             bytes.len() as c_ulong,

@@ -34,7 +34,6 @@
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.latest = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
           packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
-          packages.ima-rtmr-kernel = pkgs.callPackage ./kernel/ima-rtmr-kernel.nix { };
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
           packages.kernel-src =
@@ -48,6 +47,10 @@
               '';
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
+
+          # Build this on any machine, then run the resulting test driver on
+          # the TDX host (outside the Nix build sandbox).
+          packages.tdx-test-driver = (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driver;
 
           devShells = {
             default = pkgs.mkShell {

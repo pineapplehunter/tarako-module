@@ -46,11 +46,7 @@ impl KeyPair {
     }
 }
 
-fn ecdsa_sign(
-    data: &[u8],
-    privkey: &Scalar,
-    curve_n: &Scalar,
-) -> Result<(Scalar, Scalar)> {
+fn ecdsa_sign(data: &[u8], privkey: &Scalar, curve_n: &Scalar) -> Result<(Scalar, Scalar)> {
     let data_hash = ecc::sha256_hash(data);
 
     for _ in 0..100 {
@@ -96,16 +92,19 @@ fn ecdsa_sign(
 pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     let private = ecc::generate_private_key()?;
     let public = ecc::make_public_key(&private)?;
-    let mut pubkey = [0u8; P256_PUBKEY_BYTES];
-    pubkey[0] = 0x04;
-    pubkey[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
-    pubkey[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
+    let mut pubkey_sec1 = [0u8; P256_PUBKEY_BYTES];
+    pubkey_sec1[0] = 0x04;
+    pubkey_sec1[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
+    pubkey_sec1[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
 
     let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
 
-    let ima_measured = match ecc::ima_measure_pubkey(&pubkey) {
+    let ima_measured = match ecc::ima_measure_pubkey(&pubkey_sec1) {
         Ok(()) => {
-            pr_info!("public key successfully measured by IMA\n");
+            pr_info!(
+                "public key successfully measured by IMA: {:x?}\n",
+                pubkey_sec1
+            );
             true
         }
         Err(error) => {
@@ -121,7 +120,7 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
 
     Ok(KeyPair {
         private,
-        pubkey,
+        pubkey: pubkey_sec1,
         curve_n,
         ima_measured,
     })
