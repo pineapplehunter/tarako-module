@@ -1,141 +1,122 @@
 # Remote attestation integration test.
 #
-# Flow:
-#   1. Attester VM boots, loads the tarako module, creates a verity-protected
-#      copy of tarako-app, and starts a TCP responder on port 9999.
-#   2. Verifier VM boots, generates a random 32-byte nonce, and sends it to
-#      the attester over TCP.
-#   3. Attester's responder runs `/mnt/tarako-app <nonce_hex>`, which zero-pads
-#      the nonce to 1024-bit opaque user data and calls TARAKO_SIGN_DATA. The
-#      kernel signs SHA256(fsverity_digest || user_data) and returns
-#      (hash, sig_r, sig_s, pubkey).
-#   4. Verifier prints the response, which the test driver captures.
-#   5. Test driver verifies:
-#      - The user data contains the nonce followed by zero padding.
-#      - The ECDSA signature verifies against the public key via openssl.
-import os, binascii, hashlib, base64
+# The attester generates a fresh kernel-held ECDSA P-256 key on every boot,
+# records its compressed public key in IMA, and signs an fs-verity-protected
+# application's response to a verifier nonce. The test validates the IMA
+# record, key freshness, signed inputs, and ECDSA signature.
+import hashlib
+import os
 
-start_all()
+IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements"
+PUBKEY_EVENT = "public-key-generate"
+SPKI_P256_PREFIX_HEX = "3039301306072a8648ce3d020106082a8648ce3d030107032200"
 
-# ===== Phase 1: Attester setup =====
+
+def wait_for_tarako():
+    attester.wait_until_succeeds("grep -q '^tarako ' /proc/modules", timeout=30)
+
+
+def read_measured_pubkey():
+    ima_log = attester.wait_until_succeeds(
+        f"grep -q '{PUBKEY_EVENT}' {IMA_LOG} && cat {IMA_LOG}",
+        timeout=30,
+    )
+    print("IMA log:\n" + ima_log)
+
+    event = next(line for line in ima_log.splitlines() if PUBKEY_EVENT in line)
+    fields = event.split()
+    # Format: PCR template_hash ima-buf algo:digest event_name event_data
+    assert fields[2] == "ima-buf", f"unexpected IMA template: {fields[2]}"
+    algorithm, digest = fields[3].split(":", 1)
+    pubkey = bytes.fromhex(fields[fields.index(PUBKEY_EVENT) + 1])
+
+    assert len(pubkey) == 33, f"IMA public key has {len(pubkey)} bytes, expected 33"
+    assert pubkey[0] in (0x02, 0x03), "IMA key is not a compressed SEC1 point"
+    expected_digest = hashlib.new(algorithm, pubkey).hexdigest()
+    assert digest == expected_digest, f"IMA digest mismatch: {digest} != {expected_digest}"
+    return pubkey
+
+
+def value_after_heading(output, heading):
+    lines = output.splitlines()
+    index = next(i for i, line in enumerate(lines) if line.startswith(heading))
+    return next(line.strip() for line in lines[index + 1:] if line.strip())
+
+
+def value_on_line(output, label):
+    line = next(line for line in output.splitlines() if line.startswith(label))
+    return line.removeprefix(label).strip()
+
+
+def write_hex(path, data_hex):
+    attester.succeed(f"printf %s '{data_hex}' | xxd -r -p > {path}")
+
+
+attester.start(allow_reboot=True)
+verifier.start()
+
+# Verify that key generation is fresh across boots.
 attester.wait_for_unit("default.target")
+wait_for_tarako()
+first_pubkey = read_measured_pubkey()
 
-attester.succeed("modprobe ecc 2>/dev/null || true")
-attester.succeed("modprobe tarako")
+attester.reboot()
+attester.wait_for_unit("default.target")
+wait_for_tarako()
+pubkey = read_measured_pubkey()
+assert pubkey != first_pubkey, "public key was reused across boots"
 
-dmesg = attester.succeed("dmesg")
-for line in dmesg.split("\n"):
-    if "loading, generating ECDSA P-256 key pair" in line or "key pair generated, public key ready" in line:
-        print(line)
-
-assert "loading, generating ECDSA P-256 key pair" in dmesg
-assert "key pair generated, public key ready" in dmesg
-
-# Critical-data measurements use ima-buf (d-ng|n-ng|buf), even when ima-ng is
-# the default template. Verify that buf contains the compressed SEC1 public key
-# and that d-ng is its digest using the configured IMA hash.
-import time
-time.sleep(1)
-ima_log = attester.succeed("cat /sys/kernel/security/integrity/ima/ascii_runtime_measurements")
-print("IMA log:")
-for line in ima_log.strip().split("\n"):
-    print("  " + line)
-assert "public-key-generate" in ima_log, "public-key-generate event not found in IMA log"
-
-pkg_line = next(line for line in ima_log.strip().split("\n") if "public-key-generate" in line)
-parts = pkg_line.split()
-# Format: PCR template_hash ima-buf algo:digest event_name event_data
-assert parts[2] == "ima-buf", f"unexpected IMA template: {parts[2]}"
-ima_digest_full = parts[3]
-ima_algorithm, ima_digest_hex = ima_digest_full.split(":", 1)
-event_data_idx = parts.index("public-key-generate") + 1
-compressed_pubkey = bytes.fromhex(parts[event_data_idx])
-assert len(compressed_pubkey) == 33, (
-    f"IMA public key has {len(compressed_pubkey)} bytes, expected 33"
+# Wrap the raw compressed point in a P-256 SubjectPublicKeyInfo and ensure
+# OpenSSL accepts it. The fixed prefix contains the EC and prime256v1 OIDs.
+write_hex("/tmp/ima-pubkey.der", SPKI_P256_PREFIX_HEX + pubkey.hex())
+attester.succeed(
+    "openssl pkey -pubin -inform DER -in /tmp/ima-pubkey.der -text -noout"
 )
-assert compressed_pubkey[0] in (0x02, 0x03), "IMA public key is not a compressed SEC1 point"
-ref_digest = hashlib.new(ima_algorithm, compressed_pubkey).hexdigest()
-assert ima_digest_hex == ref_digest, f"IMA digest mismatch: {ima_digest_hex} != {ref_digest}"
-print(f"IMA digest matches {ima_algorithm} of the raw public key")
 
-# Set up fs-verity protected binary on attester.
-# The kernel module rejects ioctls from non-verity processes, so tarako-app
-# must be on a verity-protected filesystem.
-attester.succeed("dd if=/dev/zero of=/tmp/verity.img bs=1M count=64")
-attester.succeed("mkfs.ext4 -O verity /tmp/verity.img")
-attester.succeed("mkdir -p /mnt && mount /tmp/verity.img /mnt")
-attester.succeed("cp $(which tarako-app) /mnt/")
-attester.succeed("fsverity enable --block-size=1024 /mnt/tarako-app")
+# Create an fs-verity-protected copy of the client. The driver rejects signing
+# requests from executables without fs-verity protection.
+attester.succeed(
+    "dd if=/dev/zero of=/tmp/verity.img bs=1M count=64 && "
+    "mkfs.ext4 -O verity /tmp/verity.img && "
+    "mkdir -p /mnt && mount /tmp/verity.img /mnt && "
+    "cp $(which tarako-app) /mnt/ && "
+    "fsverity enable --block-size=1024 /mnt/tarako-app"
+)
+fsverity_output = attester.succeed("fsverity measure /mnt/tarako-app")
+fsverity_digest = bytes.fromhex(fsverity_output.split()[0].split(":", 1)[1])
 
-fsverity_out = attester.succeed("fsverity measure /mnt/tarako-app")
-fsverity_digest_hex = fsverity_out.strip().split()[0].split(":")[1]
-print("fs-verity digest hex:", fsverity_digest_hex)
-
-# Start TCP responder on attester (background).
 attester.succeed("nohup tarako-responder > /tmp/responder.log 2>&1 &")
 
-# Attester is reachable by its node name in the VM network
-attester_ip = "attester"
-print("attester hostname:", attester_ip)
-
-# ===== Phase 2: Remote attestation =====
-# Verifier generates a random nonce and sends it over the network.
-
+# Send a fresh challenge through the verifier VM.
 nonce = os.urandom(32)
-nonce_hex = binascii.hexlify(nonce).decode()
-print("verifier nonce:", nonce_hex)
-
-out = verifier.succeed(f"tarako-client {attester_ip} {nonce_hex}")
+out = verifier.succeed(f"tarako-client attester {nonce.hex()}")
 print(out)
 
-# ===== Phase 3: Cryptographic verification via openssl =====
+for heading in ("TARAKO_HELLO", "TARAKO_GET_PUBKEY", "TARAKO_SIGN_DATA"):
+    assert heading in out
 
-assert "TARAKO_HELLO" in out
-assert "TARAKO_GET_PUBKEY" in out
-assert "TARAKO_SIGN_DATA" in out
-assert "public key (33 bytes) DER:" in out
-
-# Verify the 32-byte nonce was preserved and padded to 1024-bit user data.
+# Verify the exact input hashed and signed by the kernel.
 user_data = nonce + bytes(128 - len(nonce))
-user_data_line = next(line for line in out.split("\n") if line.startswith("user data:"))
-response_user_data_hex = user_data_line[len("user data:"):].strip()
-expected_user_data_hex = user_data.hex()
-assert response_user_data_hex == expected_user_data_hex, (
-    f"user data mismatch: {response_user_data_hex} != {expected_user_data_hex}"
+response_user_data = bytes.fromhex(value_on_line(out, "user data:"))
+assert response_user_data == user_data, "nonce or zero padding changed"
+
+message = fsverity_digest + user_data
+kernel_hash = value_on_line(out, "hash:")
+expected_hash = hashlib.sha256(message).hexdigest()
+assert kernel_hash == expected_hash, f"kernel hash mismatch: {kernel_hash} != {expected_hash}"
+
+# Verify that IMA and the ioctl expose the same key, then verify the signature.
+pubkey_der_hex = value_after_heading(out, "public key (33 bytes) DER:")
+signature_der_hex = value_after_heading(out, "signature DER:")
+assert bytes.fromhex(pubkey_der_hex).endswith(pubkey), (
+    "IMA key differs from the ioctl public key"
 )
-print("Nonce input and zero padding verified")
 
-# Print reference hash for debugging
-msg_raw = binascii.unhexlify(fsverity_digest_hex) + user_data
-hash_line = next(line for line in out.split("\n") if line.startswith("hash:"))
-kernel_hash_hex = hash_line[5:].strip()
-ref_hash = hashlib.sha256(msg_raw).hexdigest()
-print("kernel hash:", kernel_hash_hex)
-print("reference hash:", ref_hash)
-assert kernel_hash_hex == ref_hash, (
-    f"kernel hash mismatch: {kernel_hash_hex} != {ref_hash}"
+write_hex("/tmp/pubkey.der", pubkey_der_hex)
+write_hex("/tmp/signature.der", signature_der_hex)
+write_hex("/tmp/message.bin", message.hex())
+verification = attester.succeed(
+    "openssl dgst -sha256 -verify /tmp/pubkey.der -keyform DER "
+    "-signature /tmp/signature.der /tmp/message.bin"
 )
-print("Hash matches")
-
-# Extract hex DER public key and signature from output
-out_lines = out.split("\n")
-pubkey_idx = next(i for i, l in enumerate(out_lines) if l.startswith("public key (33 bytes) DER:"))
-pubkey_hex = next(l for l in out_lines[pubkey_idx + 1:] if l.strip())
-sig_idx = next(i for i, l in enumerate(out_lines) if l.startswith("signature DER:"))
-sig_hex = next(l for l in out_lines[sig_idx + 1:] if l.strip())
-print("=== Public key DER (hex) ===")
-print(pubkey_hex)
-print("=== Signature DER (hex) ===")
-print(sig_hex)
-
-# Write message and DER files to attester, then verify via openssl
-pubkey_der_bytes = bytes.fromhex(pubkey_hex)
-# The SubjectPublicKeyInfo BIT STRING ends with the compressed SEC1 point.
-assert pubkey_der_bytes.endswith(compressed_pubkey), "IMA key differs from the ioctl public key"
-sig_der_bytes = bytes.fromhex(sig_hex)
-attester.succeed('echo "{}" | base64 -d > /tmp/pubkey.der'.format(base64.b64encode(pubkey_der_bytes).decode()))
-attester.succeed('echo "{}" | base64 -d > /tmp/sig.der'.format(base64.b64encode(sig_der_bytes).decode()))
-attester.succeed('echo "{}" | base64 -d > /tmp/msg.bin'.format(base64.b64encode(msg_raw).decode()))
-vout = attester.succeed("openssl dgst -sha256 -verify /tmp/pubkey.der -keyform DER -signature /tmp/sig.der /tmp/msg.bin")
-assert "Verified OK" in vout, f"openssl verification failed: {vout}"
-print("ECDSA signature verified OK")
+assert "Verified OK" in verification, f"signature verification failed: {verification}"

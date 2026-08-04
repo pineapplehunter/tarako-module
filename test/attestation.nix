@@ -53,15 +53,17 @@ testers.runNixOSTest {
         imports = lib.optionals tdx [ ../kernel/ima-rtmr-kernel.nix ];
 
         boot.kernelPackages = pkgs.linuxPackages_latest;
-        boot.extraModulePackages = [ tarako-mod ];
         boot.kernelParams = [ "ima_policy=critical_data" ];
-        # tarako is loaded manually in the test after IMA policy is set
+        boot.extraModulePackages = [ tarako-mod ];
+        boot.kernelModules = [ "tarako" ];
+
         environment.systemPackages = [
           tarako-app
           tarako-responder
           pkgs.fsverity-utils
           pkgs.openssl
           pkgs.python3
+          pkgs.xxd
         ];
 
         networking.firewall.allowedTCPPorts = [ 5000 ];
