@@ -23,8 +23,8 @@ A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it
 | Ioctl | Code | Description |
 |-------|------|-------------|
 | `TARAKO_HELLO` | `0x0000_5300` | Sanity check |
-| `TARAKO_GET_PUBKEY` | `0x8041_5301` | Return the raw ECDSA P-256 public key (65 bytes) |
-| `TARAKO_SIGN_DATA` | `0xC121_5302` | Sign `SHA256(fsverity_digest \|\| user_data)` with ECDSA P-256; `user_data` is 128 bytes |
+| `TARAKO_GET_PUBKEY` | `0x8021_5301` | Return the compressed SEC1 ECDSA P-256 public key (33 bytes) |
+| `TARAKO_SIGN_DATA` | `0xC101_5302` | Sign `SHA256(fsverity_digest \|\| user_data)` with ECDSA P-256; `user_data` is 128 bytes |
 
 The signing ioctl is guarded: the generated public key must have been measured successfully by **IMA**, and the caller's executable must be protected by **fs-verity**. This binds the signature to a remotely verifiable key, the measured executable, and caller-supplied data.
 
@@ -79,7 +79,7 @@ The host must have KVM access and a quote-generation service listening on vsock 
    - Concatenates it with 128 bytes of opaque user data from userspace.
    - Computes `SHA256(digest || user_data)` and reduces it modulo `n`.
    - Signs the result with ECDSA P-256 using kernel `ecc_*` helpers.
-   - Returns the signature in big-endian wire format and the uncompressed public key.
+   - Returns the signature in big-endian wire format and the compressed SEC1 public key.
 
 ## RA-TLS compatibility
 

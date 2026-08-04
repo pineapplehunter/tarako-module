@@ -24,8 +24,8 @@ Ioctls:
 | Constant | Code | Direction |
 |---|---|---|
 | `TARAKO_HELLO` | `0x0000_5300` | none |
-| `TARAKO_GET_PUBKEY` | `0x8041_5301` | read (65-byte uncompressed point) |
-| `TARAKO_SIGN_DATA` | `0xC121_5302` | read/write (SignDataReq: user_data+hash+sig_r+sig_s+pubkey = 289 bytes) |
+| `TARAKO_GET_PUBKEY` | `0x8021_5301` | read (33-byte compressed SEC1 point) |
+| `TARAKO_SIGN_DATA` | `0xC101_5302` | read/write (SignDataReq: user_data+hash+sig_r+sig_s+pubkey = 257 bytes) |
 
 The kernel computes `ECDSA-SHA256(SK, fsverity_digest || user_data)` for 128 bytes of opaque user data — signing must happen in kernel space by design.
 

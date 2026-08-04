@@ -2,7 +2,7 @@
 //
 // Opens /dev/tarako and issues three ioctls in sequence:
 //   1. TARAKO_HELLO       — sanity check
-//   2. TARAKO_GET_PUBKEY  — retrieve the raw ECDSA P-256 public key (65 bytes)
+//   2. TARAKO_GET_PUBKEY  — retrieve the compressed ECDSA P-256 public key (33 bytes)
 //   3. TARAKO_SIGN_DATA   — signs SHA256(fsverity_digest || user_data)
 //
 // Up to 1024 bits of opaque user data can be provided as a hex command-line
@@ -18,8 +18,8 @@ use std::io;
 use std::os::fd::{AsRawFd, RawFd};
 
 const TARAKO_HELLO: u32 = 0x0000_5300;
-const TARAKO_GET_PUBKEY: u32 = 0x8041_5301;
-const TARAKO_SIGN_DATA: u32 = 0xC121_5302;
+const TARAKO_GET_PUBKEY: u32 = 0x8021_5301;
+const TARAKO_SIGN_DATA: u32 = 0xC101_5302;
 const USER_DATA_BYTES: usize = 1024 / 8;
 
 #[repr(C)]
@@ -28,7 +28,7 @@ struct SignDataReq {
     hash: [u8; 32],
     sig_r: [u8; 32],
     sig_s: [u8; 32],
-    pubkey: [u8; 65],
+    pubkey: [u8; 33],
 }
 
 impl Default for SignDataReq {
@@ -38,12 +38,12 @@ impl Default for SignDataReq {
             hash: [0; 32],
             sig_r: [0; 32],
             sig_s: [0; 32],
-            pubkey: [0; 65],
+            pubkey: [0; 33],
         }
     }
 }
 
-const _: () = assert!(std::mem::size_of::<SignDataReq>() == 289);
+const _: () = assert!(std::mem::size_of::<SignDataReq>() == 257);
 
 fn hex(buf: &[u8]) -> String {
     let mut output = String::with_capacity(buf.len() * 2);
@@ -53,7 +53,7 @@ fn hex(buf: &[u8]) -> String {
     output
 }
 
-fn pubkey_der(pubkey: &[u8; 65]) -> Vec<u8> {
+fn pubkey_der(pubkey: &[u8; 33]) -> Vec<u8> {
     let algo_oid = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
     let curve_oid = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
 
@@ -185,9 +185,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("ioctl return: {result}\n");
 
-    // 2. Get public key — retrieve the raw ECDSA P-256 public key.
+    // 2. Get public key — retrieve the compressed SEC1 P-256 public key.
     println!("=== TARAKO_GET_PUBKEY ===");
-    let mut pubkey = [0u8; 65];
+    let mut pubkey = [0u8; 33];
     let result = ioctl_mut(fd, TARAKO_GET_PUBKEY, &mut pubkey)?;
     if result as usize != pubkey.len() {
         return Err(io::Error::other(format!(

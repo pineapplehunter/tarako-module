@@ -21,8 +21,8 @@ pub(crate) const P256_DIGITS: usize = (256 + 64 - 1) / 64; // DIV_ROUND_UP(256, 
 /// Byte length of a P-256 scalar / coordinate (256 bits).
 pub(crate) const P256_BYTES: usize = P256_DIGITS * 8;
 
-/// Byte length of an uncompressed P-256 public key (0x04 || X || Y, 65 bytes).
-pub(crate) const P256_PUBKEY_BYTES: usize = 1 + 2 * P256_BYTES;
+/// Byte length of a compressed P-256 public key (0x02/0x03 || X, 33 bytes).
+pub(crate) const P256_PUBKEY_BYTES: usize = 1 + P256_BYTES;
 
 /// Kernel-allocated ECC point (separate x/y buffers, managed via
 /// `ecc_alloc_point` / `ecc_free_point`).  Freed and zeroed on drop.
@@ -127,7 +127,10 @@ pub(crate) fn ima_measure_pubkey(bytes: &[u8]) -> Result {
             c"public-key-generate".as_ptr() as *const i8,
             bytes.as_ptr(),
             bytes.len() as c_ulong,
-            true,
+            // Critical-data measurements use the ima-buf template. Passing
+            // false records the buffer itself; true would record only its
+            // digest in the template's `buf` field.
+            false,
             core::ptr::null_mut(),
             0,
         )

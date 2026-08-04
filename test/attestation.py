@@ -31,8 +31,9 @@ for line in dmesg.split("\n"):
 assert "loading, generating ECDSA P-256 key pair" in dmesg
 assert "key pair generated, public key ready" in dmesg
 
-# Verify the public key was recorded in the IMA measurement log and that the
-# recorded digest matches the raw public key using the configured IMA hash.
+# Critical-data measurements use ima-buf (d-ng|n-ng|buf), even when ima-ng is
+# the default template. Verify that buf contains the compressed SEC1 public key
+# and that d-ng is its digest using the configured IMA hash.
 import time
 time.sleep(1)
 ima_log = attester.succeed("cat /sys/kernel/security/integrity/ima/ascii_runtime_measurements")
@@ -43,12 +44,17 @@ assert "public-key-generate" in ima_log, "public-key-generate event not found in
 
 pkg_line = next(line for line in ima_log.strip().split("\n") if "public-key-generate" in line)
 parts = pkg_line.split()
-# Format: PCR template_hash template algo:digest event_name event_data
+# Format: PCR template_hash ima-buf algo:digest event_name event_data
+assert parts[2] == "ima-buf", f"unexpected IMA template: {parts[2]}"
 ima_digest_full = parts[3]
 ima_algorithm, ima_digest_hex = ima_digest_full.split(":", 1)
 event_data_idx = parts.index("public-key-generate") + 1
-raw_pubkey_hex = parts[event_data_idx]
-ref_digest = hashlib.new(ima_algorithm, bytes.fromhex(raw_pubkey_hex)).hexdigest()
+compressed_pubkey = bytes.fromhex(parts[event_data_idx])
+assert len(compressed_pubkey) == 33, (
+    f"IMA public key has {len(compressed_pubkey)} bytes, expected 33"
+)
+assert compressed_pubkey[0] in (0x02, 0x03), "IMA public key is not a compressed SEC1 point"
+ref_digest = hashlib.new(ima_algorithm, compressed_pubkey).hexdigest()
 assert ima_digest_hex == ref_digest, f"IMA digest mismatch: {ima_digest_hex} != {ref_digest}"
 print(f"IMA digest matches {ima_algorithm} of the raw public key")
 
@@ -87,7 +93,7 @@ print(out)
 assert "TARAKO_HELLO" in out
 assert "TARAKO_GET_PUBKEY" in out
 assert "TARAKO_SIGN_DATA" in out
-assert "public key (65 bytes) DER:" in out
+assert "public key (33 bytes) DER:" in out
 
 # Verify the 32-byte nonce was preserved and padded to 1024-bit user data.
 user_data = nonce + bytes(128 - len(nonce))
@@ -113,7 +119,7 @@ print("Hash matches")
 
 # Extract hex DER public key and signature from output
 out_lines = out.split("\n")
-pubkey_idx = next(i for i, l in enumerate(out_lines) if l.startswith("public key (65 bytes) DER:"))
+pubkey_idx = next(i for i, l in enumerate(out_lines) if l.startswith("public key (33 bytes) DER:"))
 pubkey_hex = next(l for l in out_lines[pubkey_idx + 1:] if l.strip())
 sig_idx = next(i for i, l in enumerate(out_lines) if l.startswith("signature DER:"))
 sig_hex = next(l for l in out_lines[sig_idx + 1:] if l.strip())
@@ -124,6 +130,8 @@ print(sig_hex)
 
 # Write message and DER files to attester, then verify via openssl
 pubkey_der_bytes = bytes.fromhex(pubkey_hex)
+# The SubjectPublicKeyInfo BIT STRING ends with the compressed SEC1 point.
+assert pubkey_der_bytes.endswith(compressed_pubkey), "IMA key differs from the ioctl public key"
 sig_der_bytes = bytes.fromhex(sig_hex)
 attester.succeed('echo "{}" | base64 -d > /tmp/pubkey.der'.format(base64.b64encode(pubkey_der_bytes).decode()))
 attester.succeed('echo "{}" | base64 -d > /tmp/sig.der'.format(base64.b64encode(sig_der_bytes).decode()))

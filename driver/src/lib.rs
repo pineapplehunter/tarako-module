@@ -8,8 +8,8 @@
 //! key pair and exposes it through `/dev/tarako` via three ioctls:
 //!
 //! 1. `TARAKO_HELLO` (0x0000_5300) - sanity check.
-//! 2. `TARAKO_GET_PUBKEY` (0x8041_5301) - return the raw ECDSA P-256 public key.
-//! 3. `TARAKO_SIGN_DATA` (0xC121_5302) - remote attestation: read the calling
+//! 2. `TARAKO_GET_PUBKEY` (0x8021_5301) - return the compressed ECDSA P-256 public key.
+//! 3. `TARAKO_SIGN_DATA` (0xC101_5302) - remote attestation: read the calling
 //!    process's fs-verity digest, compute
 //!    `ECDSA-SHA256(sk, digest || user_data)` for 1024 bits of opaque user data,
 //!    and return the signature together with the public key.

@@ -31,7 +31,7 @@ pub(crate) struct SignDataReq {
     pub pubkey: [u8; P256_PUBKEY_BYTES],
 }
 
-const _: () = assert!(core::mem::size_of::<SignDataReq>() == 289);
+const _: () = assert!(core::mem::size_of::<SignDataReq>() == 257);
 
 pub(crate) struct KeyPair {
     pub private: Scalar,
@@ -92,19 +92,19 @@ fn ecdsa_sign(data: &[u8], privkey: &Scalar, curve_n: &Scalar) -> Result<(Scalar
 pub(crate) fn generate_key_pair() -> Result<KeyPair> {
     let private = ecc::generate_private_key()?;
     let public = ecc::make_public_key(&private)?;
-    let mut pubkey_sec1 = [0u8; P256_PUBKEY_BYTES];
-    pubkey_sec1[0] = 0x04;
-    pubkey_sec1[1..][..P256_BYTES].copy_from_slice(&public.x_as_bytes());
-    pubkey_sec1[1 + P256_BYTES..].copy_from_slice(&public.y_as_bytes());
+    let public_x = public.x_as_bytes();
+    let public_y = public.y_as_bytes();
+
+    // SEC1 compressed form: 0x02/0x03 according to the parity of Y, then X.
+    let mut pubkey = [0u8; P256_PUBKEY_BYTES];
+    pubkey[0] = 0x02 | (public_y[P256_BYTES - 1] & 1);
+    pubkey[1..].copy_from_slice(&public_x);
 
     let curve_n = ecc::get_curve_n().ok_or(EINVAL)?;
 
-    let ima_measured = match ecc::ima_measure_pubkey(&pubkey_sec1) {
+    let ima_measured = match ecc::ima_measure_pubkey(&pubkey) {
         Ok(()) => {
-            pr_info!(
-                "public key successfully measured by IMA: {:x?}\n",
-                pubkey_sec1
-            );
+            pr_info!("public key successfully measured by IMA: {:x?}\n", pubkey);
             true
         }
         Err(error) => {
@@ -120,7 +120,7 @@ pub(crate) fn generate_key_pair() -> Result<KeyPair> {
 
     Ok(KeyPair {
         private,
-        pubkey: pubkey_sec1,
+        pubkey,
         curve_n,
         ima_measured,
     })
