@@ -4,37 +4,11 @@
   testers,
   tdx ? false,
 }:
-let
-  # The TDX-enabled QEMU is built outside nixpkgs.  Keep qemu-img from
-  # nixpkgs for the test driver's scratch disks, but select QEMU itself at
-  # runtime so the driver output can be copied to a TDX host.
-  tdxQemu =
-    pkgs.runCommand "tdx-qemu-wrapper"
-      {
-        meta.mainProgram = "qemu-system-x86_64";
-      }
-      ''
-        mkdir -p $out/bin
-        ln -s ${lib.getExe' pkgs.qemu "qemu-img"} $out/bin/qemu-img
-        cat > $out/bin/qemu-system-x86_64 <<'EOF'
-        #!${pkgs.runtimeShell}
-        set -eu
-        qemu="''${TDX_QEMU:-/home/takata/tdx/qemu/build/qemu-system-x86_64}"
-        if [ ! -x "$qemu" ]; then
-          echo "TDX QEMU is not executable: $qemu" >&2
-          echo "Set TDX_QEMU to the TDX-enabled qemu-system-x86_64 binary." >&2
-          exit 1
-        fi
-        exec "$qemu" "$@"
-        EOF
-        chmod +x $out/bin/qemu-system-x86_64
-      '';
-in
 testers.runNixOSTest {
   name = if tdx then "tarako-attestation-tdx" else "tarako-attestation";
 
   qemu = lib.mkIf tdx {
-    package = tdxQemu;
+    package = pkgs.qemu;
     forceAccel = true;
   };
 
@@ -84,8 +58,9 @@ testers.runNixOSTest {
           memorySize = lib.mkIf tdx 4096;
 
           # qemu-vm.nix puts the kernel, initrd and NixOS closure registration
-          # on QEMU's command line.  TDX therefore does not need OVMF or a
-          # bootable disk image.
+          # on QEMU's command line, so no bootable disk image is needed. TDX
+          # still requires TDVF to initialize the trust domain, supplied by
+          # the packaged OVMF-inteltdx image below.
           directBoot.enable = lib.mkIf tdx true;
           useBootLoader = lib.mkIf tdx false;
           useEFIBoot = !tdx;
@@ -100,8 +75,9 @@ testers.runNixOSTest {
             options = [
               "-machine q35,kernel-irqchip=split,confidential-guest-support=tdx0"
               "-cpu host,+x2apic"
+              "-bios ${pkgs.OVMF-inteltdx.firmware}"
               "-device vhost-vsock-pci,guest-cid=3"
-              ''-object '{"qom-type":"tdx-guest","id":"tdx0","quote-generation-socket":{"type":"vsock","cid":"2","port":"4050"}}''
+              "-object '{\"qom-type\":\"tdx-guest\",\"id\":\"tdx0\",\"quote-generation-socket\":{\"type\":\"vsock\",\"cid\":\"2\",\"port\":\"4050\"}}'"
             ];
           };
         };

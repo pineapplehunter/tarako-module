@@ -48,8 +48,11 @@ nix build .#app
 # NixOS VM attestation test
 nix build .#checks.x86_64-linux.attestation
 
-# Build (but do not run) the TDX test driver
+# Build (but do not run) the TDX test driver and its TDVF firmware
 nix build .#tdx-test-driver
+
+# Build only the TDX-enabled TDVF firmware
+nix build .#tdx-firmware
 
 # Dev shell with Rust + rust-src
 nix develop
@@ -61,15 +64,14 @@ The integration test creates two VMs:
 
 ### Running the test on TDX
 
-Build the driver without running the VM in the Nix build sandbox, then execute it on the TDX host:
+Build the driver and firmware without running the VM in the Nix build sandbox, then execute the driver on the TDX host:
 
 ```sh
 nix build .#tdx-test-driver
-TDX_QEMU=/home/takata/tdx/qemu/build/qemu-system-x86_64 \
-  ./result/bin/nixos-test-driver
+./result/bin/nixos-test-driver
 ```
 
-The host must have KVM access and a quote-generation service listening on vsock CID 2, port 4050. The attester is direct-booted with the kernel and initramfs (no OVMF), uses 4 CPUs and 4 GiB RAM, and gets a CRB vTPM backed by `swtpm`. Its TPM state is kept in `tarako-attestation-tdx-attester-swtpm` by default; set `NIX_SWTPM_DIR` to choose another location. Extra test-driver options, such as `--keep-machine-state`, can be passed normally.
+QEMU is supplied by the locked nixpkgs revision (currently QEMU 11.0.2 with TDX and VDE support). The firmware is built automatically from nixpkgs' `OVMF-inteltdx` package using edk2's `OvmfPkg/IntelTdx/IntelTdxX64.dsc` Config-B target. It can also be built separately with `nix build .#tdx-firmware`. The host must have KVM access and a quote-generation service listening on vsock CID 2, port 4050. The attester uses QEMU direct kernel boot through TDVF, 4 CPUs, 4 GiB RAM, and a CRB vTPM backed by `swtpm`. Its TPM state is kept in `tarako-attestation-tdx-attester-swtpm` by default; set `NIX_SWTPM_DIR` to choose another location. Extra test-driver options, such as `--keep-machine-state`, can be passed normally.
 
 ## How the signing works
 

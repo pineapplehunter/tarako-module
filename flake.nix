@@ -48,8 +48,10 @@
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
 
-          # Build this on any machine, then run the resulting test driver on
-          # the TDX host (outside the Nix build sandbox).
+          # Build these on any machine, then run the resulting test driver on
+          # the TDX host (outside the Nix build sandbox). OVMF-inteltdx follows
+          # edk2's IntelTdxX64 (Config-B) build documented upstream.
+          packages.tdx-firmware = pkgs.OVMF-inteltdx.fd;
           packages.tdx-test-driver = (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driver;
 
           devShells = {
