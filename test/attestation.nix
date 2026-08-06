@@ -2,13 +2,22 @@
   lib,
   pkgs,
   testers,
+  benchmark ? false,
   tdx ? false,
 }:
 testers.runNixOSTest {
-  name = if tdx then "tarako-attestation-tdx" else "tarako-attestation";
+  name =
+    if tdx && benchmark then
+      "tarako-quote-benchmark-tdx"
+    else if tdx then
+      "tarako-attestation-tdx"
+    else if benchmark then
+      "tarako-quote-benchmark"
+    else
+      "tarako-attestation";
 
   qemu = lib.mkIf tdx {
-    package = pkgs.qemu;
+    package = lib.mkDefault pkgs.qemu;
     forceAccel = true;
   };
 
@@ -22,6 +31,21 @@ testers.runNixOSTest {
         tarako-responder = pkgs.writers.writePython3Bin "tarako-responder" {
           libraries = [ pkgs.python3Packages.flask ];
         } ./responder.py;
+
+        tdx-attest = pkgs.writers.writePython3Bin "tdx-attest" { } ./tdx-attest.py;
+        tpm-quote = pkgs.writers.writePython3Bin "tpm-quote" { } ./tpm-quote.py;
+        tarako-quote = pkgs.writers.writePython3Bin "tarako-quote" { } ./tarako-quote.py;
+        quote-bench = pkgs.writers.writePython3Bin "quote-bench" { } ./quote-bench.py;
+
+        bench-tdx-quote = pkgs.writeShellScriptBin "bench-tdx-quote" ''
+          exec ${quote-bench}/bin/quote-bench tdx "$@"
+        '';
+        bench-tpm-quote = pkgs.writeShellScriptBin "bench-tpm-quote" ''
+          exec ${quote-bench}/bin/quote-bench tpm "$@"
+        '';
+        bench-tarako-quote = pkgs.writeShellScriptBin "bench-tarako-quote" ''
+          exec ${quote-bench}/bin/quote-bench tarako "$@"
+        '';
       in
       {
         imports = lib.optionals tdx [ ../kernel/ima-rtmr-kernel.nix ];
@@ -32,7 +56,7 @@ testers.runNixOSTest {
           "ima_policy=tcb"
         ];
         boot.extraModulePackages = [ tarako-mod ];
-        boot.kernelModules = [ "tarako" ];
+        boot.kernelModules = [ "tarako" ] ++ lib.optional tdx "tdx_guest";
 
         environment = {
           systemPackages = [
@@ -42,6 +66,20 @@ testers.runNixOSTest {
             pkgs.openssl
             pkgs.python3
             pkgs.xxd
+          ]
+          ++ lib.optionals (tdx || benchmark) [
+            bench-tarako-quote
+            bench-tpm-quote
+            tarako-quote
+            tpm-quote
+            pkgs.hyperfine
+            pkgs.time
+            pkgs.tpm2-tools
+          ]
+          ++ lib.optionals tdx [
+            bench-tdx-quote
+            quote-bench
+            tdx-attest
           ];
           etc."ima/ima-policy".text = ''
             measure func=MODULE_CHECK
@@ -95,5 +133,12 @@ testers.runNixOSTest {
       };
   };
 
-  testScript = lib.readFile ./attestation.py;
+  testScript =
+    if benchmark then
+      ''
+        TDX = ${if tdx then "True" else "False"}
+        ${lib.readFile ./benchmark.py}
+      ''
+    else
+      lib.readFile ./attestation.py;
 }

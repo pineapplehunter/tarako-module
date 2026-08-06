@@ -47,12 +47,20 @@
               '';
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
+          checks.quote-benchmark = pkgs.callPackage ./test/attestation.nix { benchmark = true; };
 
           # Build these on any machine, then run the resulting test driver on
           # the TDX host (outside the Nix build sandbox). OVMF-inteltdx follows
           # edk2's IntelTdxX64 (Config-B) build documented upstream.
           packages.tdx-firmware = pkgs.OVMF-inteltdx.fd;
           packages.tdx-test-driver = (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driver;
+          packages.tdx-test-driver-interactive =
+            (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driverInteractive;
+          packages.tdx-quote-benchmark-driver =
+            (pkgs.callPackage ./test/attestation.nix {
+              benchmark = true;
+              tdx = true;
+            }).driver;
 
           devShells = {
             default = pkgs.mkShell {

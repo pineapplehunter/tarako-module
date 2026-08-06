@@ -73,6 +73,63 @@ nix build .#tdx-test-driver
 
 QEMU is supplied by the locked nixpkgs revision (currently QEMU 11.0.2 with TDX and VDE support). The firmware is built automatically from nixpkgs' `OVMF-inteltdx` package using edk2's `OvmfPkg/IntelTdx/IntelTdxX64.dsc` Config-B target. It can also be built separately with `nix build .#tdx-firmware`. The host must have KVM access and a quote-generation service listening on vsock CID 2, port 4050. The attester uses QEMU direct kernel boot through TDVF, 4 CPUs, 4 GiB RAM, and a CRB vTPM backed by `swtpm`. Its TPM state is kept in `tarako-attestation-tdx-attester-swtpm` by default; set `NIX_SWTPM_DIR` to choose another location. Extra test-driver options, such as `--keep-machine-state`, can be passed normally.
 
+### Automated quote benchmark on TDX
+
+Build the benchmark driver, copy the result to the TDX host if necessary, and run it outside the Nix build sandbox:
+
+```sh
+nix build .#tdx-quote-benchmark-driver
+./result/bin/nixos-test-driver
+```
+
+The benchmark boots the TDX attester, generates one random 32-byte nonce, and uses it for TDX, Tarako, and TPM measurements. It performs two warmups and twenty measured runs of each operation. The host quote-generation service must be available on vsock CID 2, port 4050.
+
+The non-TDX variant remains available as `nix build .#checks.x86_64-linux.quote-benchmark`; it skips only the TDX quote.
+
+### Interactive quote timing
+
+Build and launch the interactive TDX test driver:
+
+```sh
+nix build .#tdx-test-driver-interactive
+./result/bin/nixos-test-driver
+```
+
+At the Python prompt, run the test setup and enter the attester shell:
+
+```py
+>>> test_script()
+>>> attester.shell_interact()
+```
+
+The setup leaves the fs-verity-protected Tarako application at `/mnt/tarako-app`. The VM includes `tdx-attest`, `tpm-quote`, `tarako-quote`, `tpm2-tools`, and `hyperfine`. Use the same hexadecimal nonce for each mechanism:
+
+```sh
+nonce=$(openssl rand -hex 32)
+
+tdx-attest report "$nonce"
+tdx-attest quote "$nonce"
+tpm-quote "$nonce"
+tarako-quote "$nonce"
+```
+
+If the nonce is omitted, each script generates and prints a random 32-byte nonce. `tdx-attest` accepts nonces up to 64 bytes, `tpm-quote` accepts up to 64 bytes, and `tarako-quote` accepts up to 128 bytes.
+
+The commands print the measured operation latency and save their outputs under `/tmp`. The first `tpm-quote` invocation creates an endorsement key and attestation key before starting its quote timer; later invocations reuse that key. `tarako-quote` creates a verity-enabled ext4 image when needed, installs `tarako-app` at `/mnt/tarako-app`, and enables fs-verity before starting its timer. It reports both the signing ioctl latency and the complete request duration. The complete duration includes process startup, output formatting, and the hello and public-key ioctls.
+
+The dedicated benchmark commands use each tool's internal operation timer, excluding Python and shell startup. By default they perform one warmup and ten measured runs and display mean, standard deviation, median, and range:
+
+```sh
+bench-tdx-quote "$nonce"
+bench-tpm-quote "$nonce"
+bench-tarako-quote "$nonce"
+
+# Benchmark all three with the same nonce and custom run counts:
+quote-bench all "$nonce" --warmup 2 --runs 20
+```
+
+The nonce is optional and defaults to a random 32-byte value. Options accepted by every benchmark command are `--warmup N` and `--runs N`.
+
 ## How the signing works
 
 1. On load, the module generates an ECDSA P-256 key pair. The curve order `n` is cached.
@@ -97,4 +154,9 @@ The module can sign the attestation binder from `draft-fossati-seat-early-attest
 - `driver/src/convert.rs` — byte-order conversion and public key format
 - `driver/src/set_once.rs` — atomic once-only cell for global key storage
 - `app/src/main.rs` — userspace ioctl client
+- `test/benchmark.py` — automated TDX, TPM, and Tarako latency benchmark
+- `test/tdx-attest.py` — TDREPORT and TDX quote utility
+- `test/tpm-quote.py` — nonce-bound TPM quote utility
+- `test/tarako-quote.py` — fs-verity setup and nonce-bound Tarako utility
+- `test/quote-bench.py` — repeated benchmark runner and statistics
 - `AGENTS.md` — developer reference for common commands

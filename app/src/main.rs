@@ -16,6 +16,7 @@ use der::{Encode, SliceWriter, Tag};
 use std::fmt::Write;
 use std::io;
 use std::os::fd::{AsRawFd, RawFd};
+use std::time::Instant;
 
 const TARAKO_HELLO: u32 = 0x0000_5300;
 const TARAKO_GET_PUBKEY: u32 = 0x8021_5301;
@@ -207,7 +208,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         user_data,
         ..Default::default()
     };
+    let sign_started = Instant::now();
     let result = ioctl_mut(fd, TARAKO_SIGN_DATA, &mut request)?;
+    let sign_elapsed = sign_started.elapsed();
     if result != 0 {
         return Err(io::Error::other(format!(
             "TARAKO_SIGN_DATA returned unexpected value {result}"
@@ -219,6 +222,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("ioctl return: {result}");
+    println!("sign ioctl: {:.3} ms", sign_elapsed.as_secs_f64() * 1_000.0);
     println!("user data: {}", hex(&request.user_data));
     println!("hash: {}", hex(&request.hash));
     println!("sig_r: {}", hex(&request.sig_r));
