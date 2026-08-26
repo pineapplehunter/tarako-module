@@ -47,6 +47,10 @@
               '';
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
+          checks.clippy = self'.packages.default.overrideAttrs (old: {
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
+            makeFlags = old.makeFlags ++ [ "CLIPPY=1" "W=e" ];
+          });
           checks.quote-benchmark = pkgs.callPackage ./test/attestation.nix { benchmark = true; };
 
           # Build these on any machine, then run the resulting test driver on

@@ -36,6 +36,7 @@ impl<const N: usize> Vli<N> {
     }
 
     pub(crate) fn is_zero(&self) -> bool {
+        // SAFETY: `self` provides exactly `N` readable limbs.
         unsafe { ffi::vli_is_zero(self.as_ptr(), N as c_uint) }
     }
 
@@ -54,6 +55,8 @@ impl<const N: usize> Vli<N> {
     /// Subtract `right` returning (difference, borrow).
     pub(crate) fn sub_with_borrow(&self, right: &Self) -> (Self, u64) {
         let mut result = Vli::zero();
+        // SAFETY: all three pointers provide exactly `N` limbs, and `result`
+        // is distinct from both read-only inputs.
         let borrow = unsafe {
             ffi::vli_sub(
                 result.as_mut_ptr(),
@@ -84,6 +87,8 @@ impl<const N: usize> Vli<N> {
         }
 
         let mut out = Vli::zero();
+        // SAFETY: the length check proves `bytes` contains exactly `N` limbs,
+        // and `out` provides `N` writable limbs.
         unsafe {
             ffi::ecc_digits_from_bytes(
                 bytes.as_ptr(),
@@ -98,6 +103,8 @@ impl<const N: usize> Vli<N> {
     /// Modular inverse: `self^(-1) mod modulus`.
     pub(crate) fn mod_inv(&self, modulus: &Self) -> Self {
         let mut result = Vli::zero();
+        // SAFETY: each input and output pointer provides exactly `N` limbs;
+        // the output is distinct from both inputs.
         unsafe {
             ffi::vli_mod_inv(
                 result.as_mut_ptr(),
@@ -112,6 +119,8 @@ impl<const N: usize> Vli<N> {
     /// Modular multiplication: `self * right mod modulus`.
     pub(crate) fn mod_mult(&self, right: &Self, modulus: &Self) -> Self {
         let mut result = Vli::zero();
+        // SAFETY: each input and output pointer provides exactly `N` limbs;
+        // the output is distinct from all inputs.
         unsafe {
             ffi::vli_mod_mult_slow(
                 result.as_mut_ptr(),
@@ -130,6 +139,7 @@ impl<const N: usize> Vli<N> {
 impl<const N: usize> Drop for Vli<N> {
     fn drop(&mut self) {
         for limb in &mut self.0 {
+            // SAFETY: `limb` is a valid, uniquely borrowed `u64` location.
             unsafe { core::ptr::write_volatile(limb, 0) };
         }
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
@@ -172,6 +182,7 @@ fn vli_cmp_to_ordering(r: c_int) -> Ordering {
 
 impl<const N: usize> Vli<N> {
     fn cmp_ffi(&self, other: &Self) -> Ordering {
+        // SAFETY: both operands provide exactly `N` readable limbs.
         let r = unsafe { ffi::vli_cmp(self.as_ptr(), other.as_ptr(), N as c_uint) };
         vli_cmp_to_ordering(r)
     }
@@ -193,7 +204,7 @@ impl<const N: usize> Ord for Vli<N> {
 
 impl<const N: usize> PartialOrd for Vli<N> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp_ffi(other))
+        Some(Ord::cmp(self, other))
     }
 }
 

@@ -148,11 +148,15 @@ fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
         return Err(EPERM);
     }
     let _guard = kernel::sync::rcu::read_lock();
+    // SAFETY: `mm_ptr` came from the referenced current task's `mm`, and the
+    // RCU read guard keeps its executable-file pointer stable for this access.
     let exe_file = unsafe { (*mm_ptr).__bindgen_anon_1.exe_file };
     if exe_file.is_null() {
         return Err(EPERM);
     }
-    let inode = unsafe { (*exe_file).f_inode as *mut kernel::bindings::inode };
+    // SAFETY: `exe_file` was checked for null and remains protected by the RCU
+    // read guard while its inode pointer is loaded.
+    let inode = unsafe { (*exe_file).f_inode };
     if inode.is_null() {
         return Err(EPERM);
     }
@@ -160,9 +164,11 @@ fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
         size: 0,
         buffer: [0; FS_VERITY_MAX_DIGEST_SIZE],
     };
+    // SAFETY: `inode` remains live under the RCU guard, and `buffer` provides
+    // `FS_VERITY_MAX_DIGEST_SIZE` writable bytes. Optional outputs are null.
     let ret = unsafe {
         ffi::fsverity_get_digest(
-            inode as *mut core::ffi::c_void,
+            inode.cast::<core::ffi::c_void>(),
             digest.buffer.as_mut_ptr(),
             core::ptr::null_mut(),
             core::ptr::null_mut(),
@@ -184,12 +190,16 @@ fn current_exe_fsverity_digest() -> Result<FsverityDigest> {
 
 fn sign_data_req_bytes_mut(req: &mut SignDataReq) -> &mut [u8] {
     let size = core::mem::size_of::<SignDataReq>();
-    unsafe { core::slice::from_raw_parts_mut(req as *mut SignDataReq as *mut u8, size) }
+    // SAFETY: `SignDataReq` is `repr(C)` and consists solely of byte arrays,
+    // so its entire initialized object representation is writable as bytes.
+    unsafe { core::slice::from_raw_parts_mut(core::ptr::from_mut(req).cast::<u8>(), size) }
 }
 
 fn sign_data_req_bytes(req: &SignDataReq) -> &[u8] {
     let size = core::mem::size_of::<SignDataReq>();
-    unsafe { core::slice::from_raw_parts(req as *const SignDataReq as *const u8, size) }
+    // SAFETY: `SignDataReq` is `repr(C)` and consists solely of byte arrays,
+    // so its entire initialized object representation is readable as bytes.
+    unsafe { core::slice::from_raw_parts(core::ptr::from_ref(req).cast::<u8>(), size) }
 }
 
 fn read_sign_data_req(arg: usize, buf_size: usize) -> Result<SignDataReq> {
@@ -238,7 +248,7 @@ pub(crate) fn handle_sign_data(arg: usize, cmd: u32) -> Result<isize> {
     let mut req = read_sign_data_req(arg, buf_size)?;
     let to_sign_len = digest.len().checked_add(USER_DATA_BYTES).ok_or(EINVAL)?;
     let mut to_sign = [0u8; FS_VERITY_MAX_DIGEST_SIZE + USER_DATA_BYTES];
-    to_sign[..digest.len()].copy_from_slice(&digest);
+    to_sign[..digest.len()].copy_from_slice(digest);
     to_sign[digest.len()..to_sign_len].copy_from_slice(&req.user_data);
 
     req.hash = ecc::sha256_hash(&to_sign[..to_sign_len]);

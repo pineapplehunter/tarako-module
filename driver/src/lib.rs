@@ -60,6 +60,8 @@ impl Drop for KeyCleanup {
     fn drop(&mut self) {
         // `_miscdev` is declared before this field and is therefore dropped
         // first, preventing concurrent file operations during key destruction.
+        // SAFETY: module teardown cannot race module initialization, and the
+        // removed misc device prevents any new or existing key accesses.
         unsafe { KEY_PAIR.clear() };
     }
 }
@@ -80,9 +82,8 @@ impl kernel::InPlaceModule for TarakoModule {
         };
         try_pin_init!(Self {
             _miscdev <- {
-                let kp = generate_key_pair().map_err(|error| {
+                let kp = generate_key_pair().inspect_err(|error| {
                     pr_err!("failed to initialize ECDSA key pair: {:?}\n", error);
-                    error
                 })?;
                 MiscDeviceRegistration::register(options).pin_chain(move |_| {
                     if !KEY_PAIR.populate(kp) {
@@ -119,7 +120,7 @@ impl MiscDevice for TarakoDevice {
             TARAKO_HELLO => Ok(0),
             TARAKO_GET_PUBKEY => handle_get_pubkey(arg, cmd),
             TARAKO_SIGN_DATA => handle_sign_data(arg, cmd),
-            _ => Err(ENOTTY)
+            _ => Err(ENOTTY),
         }
     }
 }
