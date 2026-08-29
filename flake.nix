@@ -47,9 +47,25 @@
               '';
 
           checks.attestation = pkgs.callPackage ./test/attestation.nix { };
+          checks.formal-verification =
+            pkgs.runCommand "tarako-formal-verification"
+              {
+                nativeBuildInputs = [
+                  pkgs.proverif
+                  pkgs.python3
+                ];
+              }
+              ''
+                cp -r ${./formal-verification} formal-verification
+                python3 formal-verification/test-negative-models.py
+                touch $out
+              '';
           checks.clippy = self'.packages.default.overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
-            makeFlags = old.makeFlags ++ [ "CLIPPY=1" "W=e" ];
+            makeFlags = old.makeFlags ++ [
+              "CLIPPY=1"
+              "W=e"
+            ];
           });
           checks.quote-benchmark = pkgs.callPackage ./test/attestation.nix { benchmark = true; };
 
@@ -70,6 +86,7 @@
             default = pkgs.mkShell {
               packages = with pkgs; [
                 (python3.withPackages (ps: [ ps.cryptography ]))
+                proverif
                 rustPlatform.bindgenHook
                 (rust-bin.stable.latest.default.override {
                   extensions = [

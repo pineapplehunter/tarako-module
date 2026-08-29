@@ -1,0 +1,297 @@
+(*
+ * Symbolic model of the three-stage Tarako remote-attestation protocol.
+ *
+ * TDX and IMA appraisal are performed by separate opaque verifier services.
+ * Each service accepts evidence and returns a signed appraisal answer.  The
+ * network is public and fully controlled by a Dolev-Yao attacker.
+ *)
+
+type signing_key.
+type verification_key.
+
+free network: channel.
+
+(* Genuine evidence keys and appraisal-result keys. *)
+free tdx_attestation_key: signing_key [private].
+free tdx_verifier_key: signing_key [private].
+free ima_verifier_key: signing_key [private].
+free tarako_signing_key: signing_key [private].
+free relying_verifier_key: signing_key [private].
+
+(* Reference values. *)
+free approved_ta_digest: bitstring.
+free unapproved_ta_digest: bitstring.
+free approved_tdx_measurement: bitstring.
+free approved_ima_policy_state: bitstring.
+free unapproved_ima_policy_state: bitstring.
+
+(* Perfect signatures and a collision-resistant hash. *)
+fun public_key(signing_key): verification_key.
+fun sign(bitstring, signing_key): bitstring.
+reduc forall message: bitstring, key: signing_key;
+  verify(sign(message, key), public_key(key)) = message.
+fun hash(bitstring): bitstring.
+
+(* Domain-separated protocol messages. *)
+fun verification_request(bitstring): bitstring [data].
+fun session_context(bitstring, bitstring): bitstring [data].
+
+fun tdx_request(bitstring): bitstring [data].
+fun tdx_claim(bitstring, bitstring, bitstring): bitstring [data].
+fun tdx_appraisal_request(bitstring): bitstring [data].
+fun tdx_appraisal_answer(bitstring, bitstring, bitstring): bitstring [data].
+
+fun ima_request(bitstring): bitstring [data].
+fun ima_evidence(bitstring, bitstring, verification_key): bitstring [data].
+fun ima_appraisal_request(bitstring, bitstring): bitstring [data].
+fun ima_appraisal_answer(bitstring, bitstring, verification_key): bitstring [data].
+
+fun tarako_request(bitstring): bitstring [data].
+fun untrusted_tarako_request(bitstring): bitstring [data].
+fun tarako_claim(bitstring, bitstring): bitstring [data].
+fun integrity_verdict(bitstring, bitstring): bitstring [data].
+
+(* IMA replay and RTMR abstractions. *)
+fun ima_root(verification_key, bitstring): bitstring.
+fun ima_key_entry(verification_key): bitstring [data].
+fun rtmr_with_ima(bitstring): bitstring [data].
+table ima_log(bitstring, bitstring).
+
+(* Genuine-source and verifier-authenticity events. *)
+event TdxQuoteIssued(bitstring, bitstring, bitstring).
+event TdxQuoteVerified(bitstring, bitstring, bitstring).
+event TdxAnswerIssued(bitstring, bitstring, bitstring, bitstring).
+event TdxAnswerAccepted(bitstring, bitstring, bitstring, bitstring).
+
+event ImaLogCommitted(bitstring, verification_key).
+event ImaEvidenceVerified(bitstring, bitstring, verification_key).
+event ImaAnswerIssued(bitstring, bitstring, bitstring, verification_key).
+event ImaAnswerAccepted(bitstring, bitstring, bitstring, verification_key).
+
+event TarakoQuoteIssued(bitstring, bitstring).
+event TarakoQuoteAccepted(bitstring, bitstring).
+event IntegrityVerdictIssued(bitstring, bitstring).
+event ClientAcceptedIntegrity(bitstring, bitstring).
+
+(* Genuine Intel TDX quoting source. *)
+let TdxQuotingEntity(current_measurement: bitstring,
+                     current_rtmr: bitstring) =
+  !in(network, tdx_request(challenge: bitstring));
+   event TdxQuoteIssued(challenge, current_measurement, current_rtmr);
+   out(network,
+       sign(tdx_claim(challenge, current_measurement, current_rtmr),
+            tdx_attestation_key)).
+
+(* Opaque TDX verifier.  Its caller does not parse the quote; it trusts only a
+ * signed answer from this service. *)
+let TdxOpaqueVerifier =
+  !in(network, tdx_appraisal_request(received_quote: bitstring));
+   let tdx_claim(challenge, =approved_tdx_measurement, quoted_rtmr) =
+       verify(received_quote, public_key(tdx_attestation_key)) in
+   event TdxQuoteVerified(challenge, approved_tdx_measurement, quoted_rtmr);
+   let quote_binding = hash(received_quote) in
+   let signed_answer =
+       sign(tdx_appraisal_answer(quote_binding, challenge, quoted_rtmr),
+            tdx_verifier_key) in
+   let answer_binding = hash(signed_answer) in
+   event TdxAnswerIssued(answer_binding,
+                         quote_binding,
+                         challenge,
+                         quoted_rtmr);
+   out(network, signed_answer).
+
+(* The IMA log transport is not itself signed.  Its authenticity is obtained
+ * by replaying it to the RTMR authenticated by the TDX appraisal. *)
+let ImaLogEntity(current_root: bitstring, tarako_key: verification_key) =
+  !in(network, ima_request(tdx_answer_binding: bitstring));
+   out(network,
+       ima_evidence(tdx_answer_binding, current_root, tarako_key)).
+
+(* Opaque IMA verifier.  It validates the signed TDX answer, checks that the
+ * replayed log root equals its RTMR, and finds Tarako's key in that snapshot. *)
+let ImaOpaqueVerifier =
+  !in(network,
+      ima_appraisal_request(received_tdx_answer: bitstring,
+                            received_ima_evidence: bitstring));
+   let tdx_appraisal_answer(_, _, quoted_rtmr) =
+       verify(received_tdx_answer, public_key(tdx_verifier_key)) in
+   let tdx_answer_binding = hash(received_tdx_answer) in
+   let ima_evidence(=tdx_answer_binding,
+                    replayed_ima_root,
+                    tarako_public_key) = received_ima_evidence in
+   let rtmr_with_ima(=replayed_ima_root) = quoted_rtmr in
+   get ima_log(=replayed_ima_root,
+               =ima_key_entry(tarako_public_key)) in
+   let evidence_binding = hash(received_ima_evidence) in
+   event ImaEvidenceVerified(tdx_answer_binding,
+                             replayed_ima_root,
+                             tarako_public_key);
+   let signed_answer =
+       sign(ima_appraisal_answer(tdx_answer_binding,
+                                 evidence_binding,
+                                 tarako_public_key),
+            ima_verifier_key) in
+   let answer_binding = hash(signed_answer) in
+   event ImaAnswerIssued(answer_binding,
+                         tdx_answer_binding,
+                         evidence_binding,
+                         tarako_public_key);
+   out(network, signed_answer).
+
+(* Tarako gets the caller digest from fs-verity. *)
+let TarakoEntity =
+  !in(network, tarako_request(ima_answer_binding: bitstring));
+   event TarakoQuoteIssued(ima_answer_binding, approved_ta_digest);
+   out(network,
+       sign(tarako_claim(ima_answer_binding, approved_ta_digest),
+            tarako_signing_key)).
+
+(* A genuine quote from another fs-verity caller must still be rejected. *)
+let UntrustedCaller =
+  !in(network, untrusted_tarako_request(ima_answer_binding: bitstring));
+   event TarakoQuoteIssued(ima_answer_binding, unapproved_ta_digest);
+   out(network,
+       sign(tarako_claim(ima_answer_binding, unapproved_ta_digest),
+            tarako_signing_key)).
+
+(* Relying verifier.  TDX and IMA formats are opaque here: it verifies only the
+ * two appraisal-service signatures and their expected bindings. *)
+let RelyingVerifier =
+  !in(network, verification_request(client_request: bitstring));
+   new verifier_nonce: bitstring;
+   let tdx_challenge =
+       hash(session_context(client_request, verifier_nonce)) in
+
+   (* Stage 1: obtain a TDX quote, then outsource its appraisal. *)
+   out(network, tdx_request(tdx_challenge));
+   in(network, received_tdx_quote: bitstring);
+   out(network, tdx_appraisal_request(received_tdx_quote));
+   in(network, received_tdx_answer: bitstring);
+   let tdx_appraisal_answer(=hash(received_tdx_quote),
+                            =tdx_challenge,
+                            quoted_rtmr) =
+       verify(received_tdx_answer, public_key(tdx_verifier_key)) in
+   let tdx_answer_binding = hash(received_tdx_answer) in
+   event TdxAnswerAccepted(tdx_answer_binding,
+                           hash(received_tdx_quote),
+                           tdx_challenge,
+                           quoted_rtmr);
+
+   (* Stage 2: obtain the log and outsource replay/policy appraisal. *)
+   out(network, ima_request(tdx_answer_binding));
+   in(network, received_ima_evidence: bitstring);
+   out(network,
+       ima_appraisal_request(received_tdx_answer, received_ima_evidence));
+   in(network, received_ima_answer: bitstring);
+   let ima_appraisal_answer(=tdx_answer_binding,
+                            =hash(received_ima_evidence),
+                            tarako_public_key) =
+       verify(received_ima_answer, public_key(ima_verifier_key)) in
+   let ima_answer_binding = hash(received_ima_answer) in
+   event ImaAnswerAccepted(ima_answer_binding,
+                           tdx_answer_binding,
+                           hash(received_ima_evidence),
+                           tarako_public_key);
+
+   (* Stage 3: bind Tarako to the signed IMA appraisal answer. *)
+   out(network, tarako_request(ima_answer_binding));
+   in(network, received_tarako_quote: bitstring);
+   let tarako_claim(=ima_answer_binding, measured_ta_digest) =
+       verify(received_tarako_quote, tarako_public_key) in
+   if measured_ta_digest = approved_ta_digest then
+     event TarakoQuoteAccepted(ima_answer_binding, measured_ta_digest);
+     event IntegrityVerdictIssued(client_request, measured_ta_digest);
+     out(network,
+         sign(integrity_verdict(client_request, measured_ta_digest),
+              relying_verifier_key)).
+
+let Client =
+  !new client_request: bitstring;
+   out(network, verification_request(client_request));
+   in(network, received_verdict: bitstring);
+   let integrity_verdict(=client_request, measured_ta_digest) =
+       verify(received_verdict, public_key(relying_verifier_key)) in
+   event ClientAcceptedIntegrity(client_request, measured_ta_digest).
+
+(* If an opaque verifier says it verified evidence, that evidence has the
+ * expected genuine origin or authenticated measurement commitment. *)
+query challenge: bitstring, measurement: bitstring, rtmr: bitstring;
+  event(TdxQuoteVerified(challenge, measurement, rtmr)) ==>
+  event(TdxQuoteIssued(challenge, measurement, rtmr)).
+
+query answer_binding: bitstring, quote_binding: bitstring,
+      challenge: bitstring, rtmr: bitstring;
+  event(TdxAnswerAccepted(answer_binding,
+                          quote_binding,
+                          challenge,
+                          rtmr)) ==>
+  event(TdxAnswerIssued(answer_binding,
+                        quote_binding,
+                        challenge,
+                        rtmr)).
+
+query tdx_binding: bitstring, root: bitstring, key: verification_key;
+  event(ImaEvidenceVerified(tdx_binding, root, key)) ==>
+  event(ImaLogCommitted(root, key)).
+
+query tdx_binding: bitstring, root: bitstring, key: verification_key,
+      quote_binding: bitstring, challenge: bitstring;
+  event(ImaEvidenceVerified(tdx_binding, root, key)) ==>
+  event(TdxAnswerIssued(tdx_binding,
+                        quote_binding,
+                        challenge,
+                        rtmr_with_ima(root))).
+
+query answer_binding: bitstring, tdx_binding: bitstring,
+      evidence_binding: bitstring, key: verification_key;
+  event(ImaAnswerAccepted(answer_binding,
+                          tdx_binding,
+                          evidence_binding,
+                          key)) ==>
+  event(ImaAnswerIssued(answer_binding,
+                        tdx_binding,
+                        evidence_binding,
+                        key)).
+
+query binding: bitstring, digest: bitstring;
+  event(TarakoQuoteAccepted(binding, digest)) ==>
+  event(TarakoQuoteIssued(binding, digest)).
+
+query binding: bitstring, digest: bitstring, tdx_binding: bitstring,
+      evidence_binding: bitstring, key: verification_key;
+  event(TarakoQuoteAccepted(binding, digest)) ==>
+  event(ImaAnswerIssued(binding, tdx_binding, evidence_binding, key)).
+
+query request: bitstring, digest: bitstring;
+  event(ClientAcceptedIntegrity(request, digest)) ==>
+  event(IntegrityVerdictIssued(request, digest)).
+
+(* End-to-end TA file-integrity property.  The client does not repeat the
+ * relying verifier's policy comparison, so this follows from the authenticated
+ * verdict and the relying verifier's checks rather than from a client-side
+ * comparison that would make the query tautological. *)
+query request: bitstring, digest: bitstring;
+  event(ClientAcceptedIntegrity(request, digest)) ==>
+  digest = approved_ta_digest.
+
+process
+  let tarako_public_key = public_key(tarako_signing_key) in
+  let current_ima_root =
+      ima_root(tarako_public_key, approved_ima_policy_state) in
+  let current_rtmr = rtmr_with_ima(current_ima_root) in
+  let unapproved_ima_root =
+      ima_root(tarako_public_key, unapproved_ima_policy_state) in
+  let unapproved_rtmr = rtmr_with_ima(unapproved_ima_root) in
+  event ImaLogCommitted(current_ima_root, tarako_public_key);
+  insert ima_log(current_ima_root, ima_key_entry(tarako_public_key));
+  (
+    TdxQuotingEntity(approved_tdx_measurement, current_rtmr)
+  | TdxQuotingEntity(approved_tdx_measurement, unapproved_rtmr)
+  | TdxOpaqueVerifier
+  | ImaLogEntity(current_ima_root, tarako_public_key)
+  | ImaOpaqueVerifier
+  | TarakoEntity
+  | UntrustedCaller
+  | RelyingVerifier
+  | Client
+  )
