@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MODEL = Path(__file__).with_name("tarako-attestation.pv")
+PROCESS_START = "\nprocess\n"
+REACHABILITY_QUERY = """
+(* Diagnostic query: a successful end-to-end run must be reachable. *)
+query request: bitstring, digest: bitstring;
+  event(ClientAcceptedIntegrity(request, digest)).
+"""
 
 
 @dataclass(frozen=True)
@@ -161,6 +167,36 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="tarako-proverif-") as directory:
         root = Path(directory)
+
+        # The ProVerif manual recommends an event reachability query to catch
+        # vacuous correspondence proofs caused by unreachable protocol code.
+        reachability_model = replace_once(
+            source, PROCESS_START, REACHABILITY_QUERY + PROCESS_START
+        )
+        reachability_path = root / "successful-run-reachability.pv"
+        reachability_path.write_text(reachability_model)
+        reachability_results, reachability_output = run(proverif, reachability_path)
+        reachability_false = [
+            line for line in reachability_results
+            if "not event(ClientAcceptedIntegrity(request,digest))" in line
+            and line.endswith(" is false.")
+        ]
+        other_bad_results = [
+            line for line in reachability_results
+            if line not in reachability_false and not line.endswith(" is true.")
+        ]
+        if (
+            len(reachability_false) != 1
+            or len(reachability_results) != len(baseline_results) + 1
+            or other_bad_results
+        ):
+            print("FAIL successful end-to-end run is not demonstrably reachable",
+                  file=sys.stderr)
+            print("\n".join(reachability_results) or reachability_output,
+                  file=sys.stderr)
+            return 1
+        print("PASS successful end-to-end run is reachable")
+
         for scenario in SCENARIOS:
             mutated = source
             for old, new in scenario.replacements:

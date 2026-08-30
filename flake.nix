@@ -51,7 +51,6 @@
             pkgs.runCommand "tarako-formal-verification"
               {
                 nativeBuildInputs = [
-                  pkgs.graphviz
                   pkgs.proverif
                   pkgs.python3
                 ];
@@ -87,7 +86,6 @@
             default = pkgs.mkShell {
               packages = with pkgs; [
                 (python3.withPackages (ps: [ ps.cryptography ]))
-                graphviz
                 proverif
                 rustPlatform.bindgenHook
                 (rust-bin.stable.latest.default.override {
