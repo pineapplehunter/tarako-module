@@ -274,6 +274,10 @@ query request: bitstring, digest: bitstring;
   event(ClientAcceptedIntegrity(request, digest)) ==>
   digest = approved_ta_digest.
 
+(* The public protocol must never disclose the long-term evidence-signing keys. *)
+query attacker(tdx_attestation_key).
+query attacker(tarako_signing_key).
+
 process
   let tarako_public_key = public_key(tarako_signing_key) in
   let current_ima_root =

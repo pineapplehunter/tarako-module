@@ -142,6 +142,17 @@ Thus:
 
 These are non-injective authenticity correspondences: valid evidence can be replayed, but freshness and cross-stage hash bindings prevent it from satisfying an unrelated fresh end-to-end session. They do not claim that a genuine source issues each byte sequence only once.
 
+## Signing-key secrecy
+
+Two attacker queries prove that messages sent over the public network do not disclose the long-term evidence-signing keys:
+
+```prolog
+query attacker(tdx_attestation_key).
+query attacker(tarako_signing_key).
+```
+
+ProVerif proves `not attacker(...) is true` for both the TDX attestation private key and the Tarako private key. Publishing either key in a mutated model makes its secrecy query false, providing a negative control. This is protocol-level secrecy under the symbolic model; it does not cover implementation memory disclosure, side channels, or runtime compromise.
+
 ## ProVerif successful-run trace
 
 ![ProVerif-generated successful end-to-end witness trace](success-trace.svg)
@@ -161,7 +172,7 @@ A fact-only ProVerif query abbreviates `event(...) ==> false`. The expected resu
 RESULT not event(ClientAcceptedIntegrity(request,digest)) is false.
 ```
 
-means ProVerif found that client acceptance is reachable and reconstructed its trace. It is an expected successful-run witness, **not a failed security property**. The canonical model and its nine security queries are not modified.
+means ProVerif found that client acceptance is reachable and reconstructed its trace. It is an expected successful-run witness, **not a failed security property**. The canonical model and its eleven security queries are not modified.
 
 Regenerate the committed DOT and SVG files from the canonical model with:
 
@@ -190,6 +201,8 @@ Query event(TarakoQuoteAccepted(...)) ==> event(TarakoQuoteIssued(...)) is true.
 Query event(TarakoQuoteAccepted(...)) ==> event(ImaAnswerIssued(...)) is true.
 Query event(ClientAcceptedIntegrity(...)) ==> event(IntegrityVerdictIssued(...)) is true.
 Query event(ClientAcceptedIntegrity(request,digest)) ==> digest = approved_ta_digest is true.
+Query not attacker(tdx_attestation_key) is true.
+Query not attacker(tarako_signing_key) is true.
 ```
 
 ProVerif may rename variables or print constants with `[]`. Check the final **Verification summary** for `is false`, `cannot be proved`, or `RESULT unknown` when diagnosing a failure.
@@ -206,10 +219,10 @@ The script first requires every query in the sound model to be true. It then cre
 
 | Mutation | Property required to fail |
 |---|---|
-| Publish `tdx_attestation_key` | verified TDX quote has a genuine quoting event |
+| Publish `tdx_attestation_key` | TDX attestation-key secrecy; verified TDX quote has a genuine quoting event |
 | Publish `tdx_verifier_key` | accepted TDX answer has a genuine TDX-verifier event |
 | Publish `ima_verifier_key` | accepted IMA answer has a genuine IMA-verifier event |
-| Publish `tarako_signing_key` | accepted Tarako quote has a genuine Tarako event |
+| Publish `tarako_signing_key` | Tarako private-key secrecy; accepted Tarako quote has a genuine Tarako event |
 | Publish `relying_verifier_key` | client acceptance has a genuine relying-verifier verdict event; end-to-end digest integrity |
 | TDX service skips the quote signature | verified TDX quote has a genuine quoting event |
 | IMA service skips the TDX-answer signature | verified IMA evidence has a genuine TDX-verifier event |
@@ -222,7 +235,7 @@ The script first requires every query in the sound model to be true. It then cre
 
 For a skipped signature, the mutation replaces signature verification with direct parsing of attacker-controlled input. This models an implementation that treats the corresponding verifier or signer response as unauthenticated data. A test passes only when the expected query is reported `is false`; merely leaking a key and checking a secrecy query itself is not considered sufficient.
 
-The model intentionally omits correspondences between consecutive events in the same process and standalone private-declaration secrecy queries: those can collapse to one-step checks without exercising the protocol. Every remaining positive query crosses a trust or process boundary, and every one has at least one mutation in this suite that makes it false. This guards against vacuous or structurally tautological proofs.
+The model intentionally omits correspondences between consecutive events in the same process because those can collapse to one-step checks without exercising the protocol. The TDX and Tarako key-secrecy queries are tested by publishing each key in a negative model and requiring the corresponding query to become false. Every positive query has at least one mutation in this suite that makes it false, guarding against vacuous or structurally tautological proofs.
 
 The same suite is available as the Nix flake check:
 

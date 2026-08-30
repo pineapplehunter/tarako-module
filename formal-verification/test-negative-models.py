@@ -173,6 +173,10 @@ def main() -> int:
                 for line in results if line.endswith(" is false.")
             )
             expected_fragments = [scenario.false_result]
+            if scenario.name == "public-tdx-attestation-key":
+                expected_fragments.append("not attacker(tdx_attestation_key")
+            if scenario.name == "public-tarako-signing-key":
+                expected_fragments.append("not attacker(tarako_signing_key")
             if scenario.name == "public-ima-verifier-key":
                 expected_fragments.append(
                     "TarakoQuoteAccepted(binding,digest)) ==> event(ImaAnswerIssued"
