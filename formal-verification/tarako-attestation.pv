@@ -1,5 +1,8 @@
 (*
- * Symbolic model of the three-stage Tarako remote-attestation protocol.
+ * Symbolic model of Tarako establishment followed by cached attestations.
+ * Each relying-verifier instance appraises TDX/IMA once, then serves unbounded
+ * fresh application requests under the established key. Cache validity is an
+ * assumption: no reboot, key rotation, revocation, expiry, or TCB compromise.
  *
  * TDX and IMA appraisal are performed by separate opaque verifier services.
  * Each service accepts evidence and returns a signed appraisal answer.  The
@@ -35,6 +38,7 @@ fun hash(bitstring): bitstring.
 (* Domain-separated protocol messages. *)
 fun verification_request(bitstring): bitstring [data].
 fun session_context(bitstring, bitstring): bitstring [data].
+fun cached_request_context(bitstring, bitstring, bitstring): bitstring [data].
 
 fun tdx_request(bitstring): bitstring [data].
 fun tdx_claim(bitstring, bitstring, bitstring): bitstring [data].
@@ -69,7 +73,7 @@ event ImaAnswerIssued(bitstring, bitstring, bitstring, verification_key).
 event ImaAnswerAccepted(bitstring, bitstring, bitstring, verification_key).
 
 event TarakoQuoteIssued(bitstring, bitstring).
-event TarakoQuoteAccepted(bitstring, bitstring).
+event TarakoQuoteAccepted(bitstring, bitstring, bitstring).
 event IntegrityVerdictIssued(bitstring, bitstring).
 event ClientAcceptedIntegrity(bitstring, bitstring).
 
@@ -138,29 +142,31 @@ let ImaOpaqueVerifier =
                          tarako_public_key);
    out(network, signed_answer).
 
-(* Tarako gets the caller digest from fs-verity. *)
+(* Tarako gets the caller digest from fs-verity. The request binding is opaque
+ * to the signer, just as the kernel's user_data buffer is opaque. *)
 let TarakoEntity =
-  !in(network, tarako_request(ima_answer_binding: bitstring));
-   event TarakoQuoteIssued(ima_answer_binding, approved_ta_digest);
+  !in(network, tarako_request(request_binding: bitstring));
+   event TarakoQuoteIssued(request_binding, approved_ta_digest);
    out(network,
-       sign(tarako_claim(ima_answer_binding, approved_ta_digest),
+       sign(tarako_claim(request_binding, approved_ta_digest),
             tarako_signing_key)).
 
 (* A genuine quote from another fs-verity caller must still be rejected. *)
 let UntrustedCaller =
-  !in(network, untrusted_tarako_request(ima_answer_binding: bitstring));
-   event TarakoQuoteIssued(ima_answer_binding, unapproved_ta_digest);
+  !in(network, untrusted_tarako_request(request_binding: bitstring));
+   event TarakoQuoteIssued(request_binding, unapproved_ta_digest);
    out(network,
-       sign(tarako_claim(ima_answer_binding, unapproved_ta_digest),
+       sign(tarako_claim(request_binding, unapproved_ta_digest),
             tarako_signing_key)).
 
-(* Relying verifier.  TDX and IMA formats are opaque here: it verifies only the
- * two appraisal-service signatures and their expected bindings. *)
+(* Each instance establishes one cache independently. TDX/IMA appraisal is
+ * outside the replicated application-request handler, so it is not repeated
+ * for subsequent requests. Multiple instances may coexist on the network. *)
 let RelyingVerifier =
-  !in(network, verification_request(client_request: bitstring));
+   new session_id: bitstring;
    new verifier_nonce: bitstring;
    let tdx_challenge =
-       hash(session_context(client_request, verifier_nonce)) in
+       hash(session_context(session_id, verifier_nonce)) in
 
    (* Stage 1: obtain a TDX quote, then outsource its appraisal. *)
    out(network, tdx_request(tdx_challenge));
@@ -193,13 +199,24 @@ let RelyingVerifier =
                            hash(received_ima_evidence),
                            tarako_public_key);
 
-   (* Stage 3: bind Tarako to the signed IMA appraisal answer. *)
-   out(network, tarako_request(ima_answer_binding));
+   (* Cache: ima_answer_binding, tarako_public_key, and the accepted platform
+    * appraisal above. No new hardware quote is needed inside this replication.
+    * A fresh verifier nonce is essential: the cached answer alone is not a
+    * fresh request. The client request also binds the final verdict to its user. *)
+   !in(network, verification_request(client_request: bitstring));
+   new request_nonce: bitstring;
+   let request_binding =
+       hash(cached_request_context(ima_answer_binding,
+                                   client_request,
+                                   request_nonce)) in
+   out(network, tarako_request(request_binding));
    in(network, received_tarako_quote: bitstring);
-   let tarako_claim(=ima_answer_binding, measured_ta_digest) =
+   let tarako_claim(=request_binding, measured_ta_digest) =
        verify(received_tarako_quote, tarako_public_key) in
    if measured_ta_digest = approved_ta_digest then
-     event TarakoQuoteAccepted(ima_answer_binding, measured_ta_digest);
+     event TarakoQuoteAccepted(ima_answer_binding,
+                               request_binding,
+                               measured_ta_digest);
      event IntegrityVerdictIssued(client_request, measured_ta_digest);
      out(network,
          sign(integrity_verdict(client_request, measured_ta_digest),
@@ -253,14 +270,20 @@ query answer_binding: bitstring, tdx_binding: bitstring,
                         evidence_binding,
                         key)).
 
-query binding: bitstring, digest: bitstring;
-  event(TarakoQuoteAccepted(binding, digest)) ==>
+query cache: bitstring, binding: bitstring, digest: bitstring;
+  event(TarakoQuoteAccepted(cache, binding, digest)) ==>
   event(TarakoQuoteIssued(binding, digest)).
 
-query binding: bitstring, digest: bitstring, tdx_binding: bitstring,
-      evidence_binding: bitstring, key: verification_key;
-  event(TarakoQuoteAccepted(binding, digest)) ==>
-  event(ImaAnswerIssued(binding, tdx_binding, evidence_binding, key)).
+query cache: bitstring, binding: bitstring, digest: bitstring,
+      tdx_binding: bitstring, evidence_binding: bitstring, key: verification_key;
+  event(TarakoQuoteAccepted(cache, binding, digest)) ==>
+  event(ImaAnswerIssued(cache, tdx_binding, evidence_binding, key)).
+
+(* Request freshness: replaying a single issued TQ cannot account for two
+ * acceptances, even when both requests share one cached IMA appraisal. *)
+query cache: bitstring, binding: bitstring, digest: bitstring;
+  inj-event(TarakoQuoteAccepted(cache, binding, digest)) ==>
+  inj-event(TarakoQuoteIssued(binding, digest)).
 
 query request: bitstring, digest: bitstring;
   event(ClientAcceptedIntegrity(request, digest)) ==>
@@ -296,6 +319,6 @@ process
   | ImaOpaqueVerifier
   | TarakoEntity
   | UntrustedCaller
-  | RelyingVerifier
+  | !RelyingVerifier
   | Client
   )

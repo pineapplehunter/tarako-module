@@ -11,11 +11,29 @@ from pathlib import Path
 
 MODEL = Path(__file__).with_name("tarako-attestation.pv")
 PROCESS_START = "\nprocess\n"
+EXPECTED_SECURITY_QUERIES = 12
 REACHABILITY_QUERY = """
-(* Diagnostic query: a successful end-to-end run must be reachable. *)
+(* Diagnostics: successful acceptance and two distinct TQs under one cache
+ * must be reachable. Fact-only queries must be false (a trace exists). *)
 query request: bitstring, digest: bitstring;
   event(ClientAcceptedIntegrity(request, digest)).
+
+query cache: bitstring, first: bitstring, second: bitstring, digest: bitstring;
+  event(TarakoQuoteAccepted(cache, first, digest)) &&
+  event(TarakoQuoteAccepted(cache, second, digest)) && first <> second.
 """
+REQUEST_BINDING = """   let request_binding =
+       hash(cached_request_context(ima_answer_binding,
+                                   client_request,
+                                   request_nonce)) in"""
+TARAKO_ORIGIN = (
+    "event(TarakoQuoteAccepted(cache,binding,digest)) ==> "
+    "event(TarakoQuoteIssued"
+)
+TARAKO_FRESHNESS = (
+    "inj-event(TarakoQuoteAccepted(cache,binding,digest)) ==> "
+    "inj-event(TarakoQuoteIssued"
+)
 
 
 @dataclass(frozen=True)
@@ -44,7 +62,7 @@ SCENARIOS = (
     public_key_scenario("tdx_attestation_key", "TdxQuoteVerified"),
     public_key_scenario("tdx_verifier_key", "TdxAnswerAccepted"),
     public_key_scenario("ima_verifier_key", "ImaAnswerAccepted"),
-    public_key_scenario("tarako_signing_key", "TarakoQuoteAccepted(binding,digest)) ==> event(TarakoQuoteIssued"),
+    public_key_scenario("tarako_signing_key", TARAKO_ORIGIN),
     public_key_scenario("relying_verifier_key", "ClientAcceptedIntegrity(request,digest)) ==> event(IntegrityVerdictIssued"),
     Scenario(
         "tdx-service-skips-quote-signature",
@@ -115,12 +133,36 @@ SCENARIOS = (
     Scenario(
         "relying-verifier-skips-tarako-signature",
         ((
-            """let tarako_claim(=ima_answer_binding, measured_ta_digest) =
+            """let tarako_claim(=request_binding, measured_ta_digest) =
        verify(received_tarako_quote, tarako_public_key) in""",
-            """let tarako_claim(=ima_answer_binding, measured_ta_digest) =
+            """let tarako_claim(=request_binding, measured_ta_digest) =
        received_tarako_quote in""",
         ),),
-        "TarakoQuoteAccepted(binding,digest)) ==> event(TarakoQuoteIssued",
+        TARAKO_ORIGIN,
+    ),
+    Scenario(
+        "cached-request-reuses-static-appraisal-binding",
+        ((REQUEST_BINDING, "   let request_binding = ima_answer_binding in"),),
+        TARAKO_FRESHNESS,
+    ),
+    Scenario(
+        "cached-request-omits-verifier-nonce",
+        ((REQUEST_BINDING, """   let request_binding =
+       hash(session_context(ima_answer_binding, client_request)) in"""),),
+        TARAKO_FRESHNESS,
+    ),
+    Scenario(
+        "relying-verifier-skips-request-binding",
+        ((
+            "let tarako_claim(=request_binding, measured_ta_digest) =",
+            "let tarako_claim(unchecked_binding, measured_ta_digest) =",
+        ),),
+        TARAKO_FRESHNESS,
+    ),
+    Scenario(
+        "relying-verifier-skips-approved-digest",
+        (("   if measured_ta_digest = approved_ta_digest then\n", ""),),
+        "ClientAcceptedIntegrity(request,digest)) ==> digest =",
     ),
     Scenario(
         "client-skips-relying-verifier-signature",
@@ -154,8 +196,12 @@ def main() -> int:
 
     baseline_results, baseline_output = run(proverif, MODEL)
     bad_baseline = [line for line in baseline_results if not line.endswith(" is true.")]
-    if not baseline_results or bad_baseline:
-        print("sound model did not prove every query", file=sys.stderr)
+    if len(baseline_results) != EXPECTED_SECURITY_QUERIES or bad_baseline:
+        print(
+            f"sound model must prove all {EXPECTED_SECURITY_QUERIES} queries; "
+            f"received {len(baseline_results)} results",
+            file=sys.stderr,
+        )
         print("\n".join(bad_baseline) or baseline_output, file=sys.stderr)
         return 1
     print(f"PASS sound model ({len(baseline_results)} queries true)")
@@ -176,9 +222,13 @@ def main() -> int:
         reachability_path = root / "successful-run-reachability.pv"
         reachability_path.write_text(reachability_model)
         reachability_results, reachability_output = run(proverif, reachability_path)
+        reachability_fragments = (
+            "not event(ClientAcceptedIntegrity(request,digest))",
+            "event(TarakoQuoteAccepted(cache,first,digest))",
+        )
         reachability_false = [
             line for line in reachability_results
-            if "not event(ClientAcceptedIntegrity(request,digest))" in line
+            if any(fragment in line for fragment in reachability_fragments)
             and line.endswith(" is false.")
         ]
         other_bad_results = [
@@ -186,16 +236,21 @@ def main() -> int:
             if line not in reachability_false and not line.endswith(" is true.")
         ]
         if (
-            len(reachability_false) != 1
-            or len(reachability_results) != len(baseline_results) + 1
+            len(reachability_false) != 2
+            or not all(
+                any(fragment in line for line in reachability_false)
+                for fragment in reachability_fragments
+            )
+            or len(reachability_results) != len(baseline_results) + 2
             or other_bad_results
         ):
-            print("FAIL successful end-to-end run is not demonstrably reachable",
+            print("FAIL client acceptance or cached-session reuse is not reachable",
                   file=sys.stderr)
             print("\n".join(reachability_results) or reachability_output,
                   file=sys.stderr)
             return 1
         print("PASS successful end-to-end run is reachable")
+        print("PASS two distinct TQs under one cached appraisal are reachable")
 
         for scenario in SCENARIOS:
             mutated = source
@@ -215,7 +270,7 @@ def main() -> int:
                 expected_fragments.append("not attacker(tarako_signing_key")
             if scenario.name == "public-ima-verifier-key":
                 expected_fragments.append(
-                    "TarakoQuoteAccepted(binding,digest)) ==> event(ImaAnswerIssued"
+                    "TarakoQuoteAccepted(cache,binding,digest)) ==> event(ImaAnswerIssued"
                 )
             if scenario.name in {
                 "public-relying-verifier-key",

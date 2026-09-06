@@ -83,6 +83,13 @@
             }).driver;
 
           devShells = {
+            # Run protocol checks without building kernel/Rust development inputs.
+            formal-verification = pkgs.mkShell {
+              packages = [
+                pkgs.proverif
+                pkgs.python3
+              ];
+            };
             default = pkgs.mkShell {
               packages = with pkgs; [
                 (python3.withPackages (ps: [ ps.cryptography ]))
