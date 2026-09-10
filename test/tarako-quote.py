@@ -8,9 +8,7 @@ import subprocess
 import sys
 import time
 
-TARAKO_APP = Path("/mnt/tarako-app")
-VERITY_IMAGE = Path("/tmp/verity.img")
-VERITY_IMAGE_SIZE = 64 * 1024 * 1024
+TARAKO_APP = Path("/var/lib/tarako/tarako-app")
 
 
 def run(*command: str) -> None:
@@ -45,19 +43,7 @@ def prepare_app() -> None:
     if source is None:
         raise SystemExit("tarako-app is not available in PATH")
 
-    mountpoint = TARAKO_APP.parent
-    mountpoint.mkdir(parents=True, exist_ok=True)
-    if not os.path.ismount(mountpoint):
-        if not VERITY_IMAGE.exists():
-            message = f"creating fs-verity image at {VERITY_IMAGE}"
-            print(message, file=sys.stderr)
-            with VERITY_IMAGE.open("wb") as image:
-                image.truncate(VERITY_IMAGE_SIZE)
-            run("mkfs.ext4", "-q", "-F", "-O", "verity", VERITY_IMAGE)
-        run("mount", VERITY_IMAGE, mountpoint)
-
-    if use_existing_app():
-        return
+    TARAKO_APP.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, TARAKO_APP)
     run("fsverity", "enable", "--block-size=1024", TARAKO_APP)
     if not is_verity_enabled(TARAKO_APP):

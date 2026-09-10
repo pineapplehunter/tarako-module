@@ -4,7 +4,15 @@ import os
 RUNS = 20
 WARMUP = 2
 
-attester.start()
+attester.start(allow_reboot=True)
+attester.wait_for_unit("default.target")
+attester.wait_until_succeeds("grep -q '^tarako ' /proc/modules", timeout=30)
+
+# Enable fs-verity on the existing VM root filesystem. tune2fs can set this
+# read-only-compatible feature while mounted; reboot so the kernel observes it.
+root_device = attester.succeed("findmnt -n -o SOURCE /").strip()
+attester.succeed(f"tune2fs -O verity {root_device}")
+attester.reboot()
 attester.wait_for_unit("default.target")
 attester.wait_until_succeeds("grep -q '^tarako ' /proc/modules", timeout=30)
 

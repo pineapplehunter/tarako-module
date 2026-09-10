@@ -60,6 +60,12 @@ attester.wait_for_unit("default.target")
 wait_for_tarako()
 first_pubkey = read_measured_pubkey()
 
+# NixOS VM roots are ext4, but their default mkfs feature set does not include
+# fs-verity. Enable it on the existing root filesystem; the reboot needed for
+# the key-freshness check also makes the kernel observe the new feature.
+root_device = attester.succeed("findmnt -n -o SOURCE /").strip()
+attester.succeed(f"tune2fs -O verity {root_device}")
+
 attester.reboot()
 attester.wait_for_unit("default.target")
 wait_for_tarako()
@@ -73,16 +79,14 @@ attester.succeed(
     "openssl pkey -pubin -inform DER -in /tmp/ima-pubkey.der -text -noout"
 )
 
-# Create an fs-verity-protected copy of the client. The driver rejects signing
-# requests from executables without fs-verity protection.
+# Create an fs-verity-protected copy of the client on the main filesystem. The
+# driver rejects signing requests from executables without fs-verity protection.
 attester.succeed(
-    "dd if=/dev/zero of=/tmp/verity.img bs=1M count=64 && "
-    "mkfs.ext4 -O verity /tmp/verity.img && "
-    "mkdir -p /mnt && mount /tmp/verity.img /mnt && "
-    "cp $(which tarako-app) /mnt/ && "
-    "fsverity enable --block-size=1024 /mnt/tarako-app"
+    "mkdir -p /var/lib/tarako && "
+    "cp $(which tarako-app) /var/lib/tarako/ && "
+    "fsverity enable --block-size=1024 /var/lib/tarako/tarako-app"
 )
-fsverity_output = attester.succeed("fsverity measure /mnt/tarako-app")
+fsverity_output = attester.succeed("fsverity measure /var/lib/tarako/tarako-app")
 fsverity_digest = bytes.fromhex(fsverity_output.split()[0].split(":", 1)[1])
 
 attester.succeed("nohup tarako-responder > /tmp/responder.log 2>&1 &")

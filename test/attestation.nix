@@ -62,6 +62,7 @@ testers.runNixOSTest {
           systemPackages = [
             tarako-app
             tarako-responder
+            pkgs.e2fsprogs
             pkgs.fsverity-utils
             pkgs.openssl
             pkgs.python3
