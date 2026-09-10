@@ -38,7 +38,7 @@ fun hash(bitstring): bitstring.
 (* Domain-separated protocol messages. *)
 fun verification_request(bitstring): bitstring [data].
 fun session_context(bitstring, bitstring): bitstring [data].
-fun cached_request_context(bitstring, bitstring, bitstring): bitstring [data].
+fun request_context(bitstring, bitstring): bitstring [data].
 
 fun tdx_request(bitstring): bitstring [data].
 fun tdx_claim(bitstring, bitstring, bitstring): bitstring [data].
@@ -199,16 +199,14 @@ let RelyingVerifier =
                            hash(received_ima_evidence),
                            tarako_public_key);
 
-   (* Cache: ima_answer_binding, tarako_public_key, and the accepted platform
-    * appraisal above. No new hardware quote is needed inside this replication.
-    * A fresh verifier nonce is essential: the cached answer alone is not a
-    * fresh request. The client request also binds the final verdict to its user. *)
+   (* Cache: tarako_public_key and the accepted platform appraisal above.
+    * No new hardware quote is needed inside this replication. A fresh verifier
+    * nonce prevents replay. The client request binds the final verdict to its
+    * user. A concrete profile may add a cache identifier to this opaque input. *)
    !in(network, verification_request(client_request: bitstring));
    new request_nonce: bitstring;
    let request_binding =
-       hash(cached_request_context(ima_answer_binding,
-                                   client_request,
-                                   request_nonce)) in
+       hash(request_context(client_request, request_nonce)) in
    out(network, tarako_request(request_binding));
    in(network, received_tarako_quote: bitstring);
    let tarako_claim(=request_binding, measured_ta_digest) =

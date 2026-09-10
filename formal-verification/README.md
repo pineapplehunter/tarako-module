@@ -35,7 +35,6 @@ TDX_quote = Sign_TDX(tdx_claim(C, approved_measurement, quoted_RTMR))
 TDX_answer = Sign_TDX_verifier(H(TDX_quote), C, quoted_RTMR)
 IMA_evidence = (H(TDX_answer), replayed_root, TAK_pub)
 IMA_answer = Sign_IMA_verifier(H(TDX_answer), H(IMA_evidence), TAK_pub)
-cache_binding = H(IMA_answer)
 ```
 
 The real model uses distinct typed constructors for each signed message; the
@@ -44,9 +43,11 @@ notation above is an abbreviated description, not a concrete wire format.
 The relying verifier validates both appraisal signatures and their exact
 bindings. The IMA service checks that the evidence root matches the RTMR in the
 TDX answer and that the accepted Tarako key belongs to that root. The established
-state contains `cache_binding`, `tarako_public_key`, and the validated appraisal
-context. These values are lexically scoped inside the request handler, not
-read from an attacker-controlled cache lookup.
+state contains `tarako_public_key` and the validated appraisal context. These
+values are lexically scoped inside the request handler, not read from an
+attacker-controlled cache lookup. A concrete verifier may index the accepted
+appraisal record by `tarako_public_key`; cache lookup and key-collision handling
+are outside this model.
 
 The process structure is important:
 
@@ -71,8 +72,8 @@ operations are outside the inner replication and are not repeated per TQ.
 For every received client request, the relying verifier creates a new nonce:
 
 ```text
-request_binding = H(cached_request_context(
-    cache_binding, client_request, fresh_request_nonce))
+request_binding = H(request_context(
+    client_request, fresh_request_nonce))
 TQ = Sign_TAK(tarako_claim(request_binding, caller_fsverity_digest))
 verdict = Sign_relying_verifier(integrity_verdict(
     client_request, accepted_digest))
@@ -86,11 +87,11 @@ policy comparison: end-to-end digest integrity depends on the authenticated
 verifier verdict rather than a tautological comparison at the client.
 
 The request nonce prevents replay even if the attacker submits the same client
-request repeatedly. The cache binding associates the challenge with the accepted
-appraisal. Reusing only `H(IMA_answer)` is **not sufficient**: unlike the old
-full-establishment-per-request model, the cached answer is no longer fresh for
-each application check. Negative tests exercise both this static-binding bug
-and omission of the fresh verifier nonce.
+request repeatedly. Verification under `tarako_public_key` associates the TQ
+with the appraisal record retained under that key. A static binding is **not
+sufficient** because the cached appraisal is no longer fresh for each application
+check. Negative tests exercise both this static-binding bug and omission of the
+fresh verifier nonce.
 
 Tarako itself treats the binding as opaque. It does not parse or authenticate
 the appraisal answer; those checks belong to the relying verifier.
@@ -105,11 +106,12 @@ signature = ECDSA-P256 over SHA256(M)
 ```
 
 A possible userspace profile is to hash a canonical, domain-separated encoding
-of `(cache_binding, client_request, request_nonce)` with SHA-256 and pass that
-32-byte binding followed by 96 zero bytes as `user_data`. The verifier would
-reconstruct that exact buffer and the expected executable digest before checking
-the signature. This fits the existing ioctl; no kernel-side appraisal parsing
-is needed.
+of `(client_request, request_nonce)` with SHA-256 and pass that 32-byte binding
+followed by 96 zero bytes as `user_data`. A deployment that needs an explicit
+cache or application identifier may include it in the encoded request data or
+another agreed portion of `user_data`. The verifier would reconstruct that exact
+buffer and the expected executable digest before checking the signature. This
+fits the existing ioctl; no kernel-side appraisal parsing is needed.
 
 **That profile is not implemented by this change.** The model uses typed
 constructors, perfect signatures, and abstract hashes; it does not prove a
@@ -256,7 +258,7 @@ The canonical model contains only the 12 security queries.
 | Skip TDX-answer signature at relying verifier | TDX answer origin |
 | Skip IMA-answer signature at relying verifier | IMA answer origin |
 | Skip TQ signature | TQ origin |
-| Reuse static cached appraisal hash as request binding | Injective TQ authentication |
+| Reuse a static value as request binding | Injective TQ authentication |
 | Omit per-request verifier nonce | Injective TQ authentication under repeated client requests |
 | Skip signed request-binding comparison | Injective TQ authentication |
 | Skip approved-digest comparison | End-to-end accepted-digest integrity |

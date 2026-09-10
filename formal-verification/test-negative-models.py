@@ -23,9 +23,7 @@ query cache: bitstring, first: bitstring, second: bitstring, digest: bitstring;
   event(TarakoQuoteAccepted(cache, second, digest)) && first <> second.
 """
 REQUEST_BINDING = """   let request_binding =
-       hash(cached_request_context(ima_answer_binding,
-                                   client_request,
-                                   request_nonce)) in"""
+       hash(request_context(client_request, request_nonce)) in"""
 TARAKO_ORIGIN = (
     "event(TarakoQuoteAccepted(cache,binding,digest)) ==> "
     "event(TarakoQuoteIssued"
@@ -141,14 +139,14 @@ SCENARIOS = (
         TARAKO_ORIGIN,
     ),
     Scenario(
-        "cached-request-reuses-static-appraisal-binding",
+        "cached-request-reuses-static-binding",
         ((REQUEST_BINDING, "   let request_binding = ima_answer_binding in"),),
         TARAKO_FRESHNESS,
     ),
     Scenario(
         "cached-request-omits-verifier-nonce",
         ((REQUEST_BINDING, """   let request_binding =
-       hash(session_context(ima_answer_binding, client_request)) in"""),),
+       hash(verification_request(client_request)) in"""),),
         TARAKO_FRESHNESS,
     ),
     Scenario(
