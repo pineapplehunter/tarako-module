@@ -34,6 +34,7 @@
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.latest = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
           packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
+          packages.attester = pkgs.callPackage ./attester/package.nix { };
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
           packages.kernel-src =
