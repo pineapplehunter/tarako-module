@@ -4,8 +4,9 @@
 
 ```sh
 nix build .#default                                     # kernel module
-nix build .#app                                         # userspace app
-nix build .#checks.x86_64-linux.attestation             # two-machine NixOS VM test
+nix build .#app                                         # userspace ioctl app
+nix build .#attester                                    # Go Attester webserver
+nix build .#checks.x86_64-linux.attestation             # three-node NixOS VM test
 nix build .#kernel-src                                  # minimal ~4.7 MB kernel Rust source tree
 nix develop                                             # dev shell (rust-src, rust-analyzer, python3 w/ cryptography)
 nix fmt                                                 # format using nixfmt-tree
@@ -18,7 +19,8 @@ Commands run in `nix develop` shell unless noted. The attestation test verifies 
 
 - **`driver/src/`**: Rust kernel module (`miscdevice`, `/dev/tarako`). Sub-files are `include!()`'d from `lib.rs` (not separate compiled units — Kbuild only lists `src/lib.o`). Generates ECDSA P-256 key pair on load, zeroizes private key on unload. The signing ioctl is guarded: IMA must measure the generated key and the caller's exe must be fs-verity protected.
 - **`app/`**: standalone Cargo binary with `der` and `libc` crates. Uses hardcoded ioctl numbers matching the kernel module. Accepts up to 1024 bits of hex user data on the CLI; shorter values such as a nonce are zero-padded.
-- **`test/`**: NixOS VM test definition (`attestation.nix`/`.py`), plus TCP responder (`responder.py`, Flask) and client (`client.py`, requests).
+- **`attester/`**: single-binary Go webserver. It receives the request and Verifier nonce from the Client/Relying Party and invokes the Tarako ioctls directly, so its own fs-verity digest is signed.
+- **`test/`**: Three-node Background-Check NixOS VM test definition (`attestation.nix`/`.py`), with a Client/Relying Party (`client.py`) and a stateful Verifier (`verifier.py`). The boot-enabled Verifier signs results with its test leaf certificate key, and the Client validates them against `root-ca.crt`. The disabled-at-boot Attester service copies and enables fs-verity on the Go binary in its service script before executing it.
 
 Ioctls:
 | Constant | Code | Direction |

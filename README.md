@@ -4,19 +4,25 @@ A Linux kernel module that generates an ECDSA P-256 key pair on load, exposes it
 
 ## Architecture
 
+The integration follows the RATS **Background-Check Model**. The Client acts as the Relying Party and carries Evidence between the Attester and Verifier:
+
+```text
+Client/Relying Party          Attester                 Verifier
+        |                         |                        |
+        |--- request challenge -------------------------->|
+        |<-- nonce + challenge ID ------------------------|
+        |--- request + nonce ------>|                     |
+        |<-- Tarako Quote ----------|                     |
+        |--- Tarako Quote + expected request/nonce ------>|
+        |<-- signed Attestation Result + certificate ------|
 ```
-┌─────────────┐     TCP (nonce)     ┌──────────────┐
-│  Verifier   │ ──────────────────► │  Attester    │
-│ (challenger)│                     │ (kernel mod) │
-│             │ ◄────────────────── │              │
-│             │  sig + pubkey       │  /dev/tarako │
-└─────────────┘                     └──────────────┘
-```
+
+The Attester never contacts the Verifier and never receives an Attestation Result.
 
 **Attester** (runs the kernel module):
 1. Loads `tarako` module — ECDSA P-256 key pair is generated in kernel space.
 2. The private key never leaves the kernel and is zeroized on module unload.
-3. A TCP responder accepts nonces from the network, calls `TARAKO_SIGN_DATA`, and returns the signature.
+3. The fs-verity-protected Go Attester webserver accepts a Client request and Verifier nonce, calls `TARAKO_SIGN_DATA` directly, and returns Tarako Quote Evidence to the Client.
 
 **Kernel module (`driver/src/`)** — three ioctls:
 
@@ -34,7 +40,9 @@ The signing ioctl is guarded: the generated public key must have been measured s
 |------|------|
 | `driver/src/` | Kernel module (Rust, `rust/kernel` framework) — multi-file layout |
 | `app/src/main.rs` | Userspace `tarako-app` — opens `/dev/tarako` and issues ioctls |
-| `test/attestation.py` | Two-machine NixOS VM integration test |
+| `attester/main.go` | Single-binary Go Attester webserver that calls the ioctls directly |
+| `test/attestation.py` | Three-node Background-Check NixOS VM integration test |
+| `test/verifier.py` | Stateful Verifier challenge, TQ validation, and result service |
 
 ## Build & Test
 
@@ -42,8 +50,9 @@ The signing ioctl is guarded: the generated public key must have been measured s
 # Kernel module
 nix build .#default
 
-# Userspace app
+# Userspace ioctl app and single-binary Go Attester
 nix build .#app
+nix build .#attester
 
 # NixOS VM attestation test
 nix build .#checks.x86_64-linux.attestation
@@ -58,9 +67,14 @@ nix build .#tdx-firmware
 nix develop
 ```
 
-The integration test creates two VMs:
-- **attester**: loads the module, creates a verity-protected ext4 image, runs `tarako-app` from it, and exposes a TCP responder.
-- **verifier**: generates a random nonce, sends it to the attester over TCP, receives the signature, and verifies it with OpenSSL. The app zero-pads the nonce to the 128-byte ioctl input.
+The integration test creates three VMs:
+- **client/Relying Party**: obtains a challenge from the Verifier, sends the request and nonce to the Attester, forwards the returned Tarako Quote and expected values to the Verifier, validates the Verifier certificate against its trusted root CA, and authenticates the signed Attestation Result.
+- **verifier**: generates and records a fresh nonce, atomically consumes it when Evidence arrives, verifies the TAK public key, `D || U` hash, and ECDSA signature, and signs the Attestation Result with the private key for its root-signed certificate.
+- **attester**: loads the module and runs one fs-verity-protected Go webserver binary as `tarako-attester.service`. That binary handles the request and directly invokes the Tarako ioctls, so its own executable digest is `D`.
+
+The Verifier service starts at boot with a test leaf certificate and private key; its appraisal-policy files may be provisioned afterward. The Client has only the test root CA certificate. These committed credentials are integration-test fixtures, not production keys. The Attester service remains disabled at boot, and its systemd service script copies the Go binary to mutable storage, enables fs-verity on it, and then executes that exact file.
+
+The Attester and Verifier never communicate directly. The test repeats identical Client requests and requires distinct Verifier nonces and request bindings. TDX/IMA appraisal is outside this network flow; the test harness provisions the measured TAK public key and approved executable digest to test only Tarako Quote generation and Background-Check appraisal.
 
 ### Running the test on TDX
 
@@ -158,5 +172,6 @@ The module can sign the attestation binder from `draft-fossati-seat-early-attest
 - `test/tdx-attest.py` — TDREPORT and TDX quote utility
 - `test/tpm-quote.py` — nonce-bound TPM quote utility
 - `test/tarako-quote.py` — fs-verity setup and nonce-bound Tarako utility
+- `test/root-ca.crt`, `test/verifier.crt`, `test/verifier-key.pem` — test-only Verifier PKI fixtures
 - `test/quote-bench.py` — repeated benchmark runner and statistics
 - `AGENTS.md` — developer reference for common commands
