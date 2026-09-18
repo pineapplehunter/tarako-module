@@ -3,9 +3,10 @@
 # The attester generates a fresh kernel-held ECDSA P-256 key on every boot,
 # records its compressed public key in IMA, and signs an fs-verity-protected
 # application's response to a verifier nonce. The test validates the IMA
-# record, key freshness, signed inputs, and ECDSA signature.
+# record, key freshness, signed inputs, ECDSA signature, and Background-Check
+# routing through a separate Client/Relying Party.
 import hashlib
-import os
+import json
 
 IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements"
 PUBKEY_EVENT = "public-key-generate"
@@ -37,23 +38,23 @@ def read_measured_pubkey():
     return pubkey
 
 
-def value_after_heading(output, heading):
-    lines = output.splitlines()
-    index = next(i for i, line in enumerate(lines) if line.startswith(heading))
-    return next(line.strip() for line in lines[index + 1:] if line.strip())
+def write_hex(machine, path, data_hex):
+    machine.succeed(f"printf %s '{data_hex}' | xxd -r -p > {path}")
 
 
-def value_on_line(output, label):
-    line = next(line for line in output.splitlines() if line.startswith(label))
-    return line.removeprefix(label).strip()
-
-
-def write_hex(path, data_hex):
-    attester.succeed(f"printf %s '{data_hex}' | xxd -r -p > {path}")
+def expected_request_binding(request_value, nonce_hex):
+    context = json.dumps(
+        {"nonce": nonce_hex, "request": request_value},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(b"TARAKO-TQ-REQUEST-V1\0" + context).digest()
 
 
 attester.start(allow_reboot=True)
 verifier.start()
+client.start()
+verifier.wait_for_unit("tarako-verifier.service")
 
 # Verify that key generation is fresh across boots.
 attester.wait_for_unit("default.target")
@@ -74,53 +75,60 @@ assert pubkey != first_pubkey, "public key was reused across boots"
 
 # Wrap the raw compressed point in a P-256 SubjectPublicKeyInfo and ensure
 # OpenSSL accepts it. The fixed prefix contains the EC and prime256v1 OIDs.
-write_hex("/tmp/ima-pubkey.der", SPKI_P256_PREFIX_HEX + pubkey.hex())
+write_hex(attester, "/tmp/ima-pubkey.der", SPKI_P256_PREFIX_HEX + pubkey.hex())
 attester.succeed(
     "openssl pkey -pubin -inform DER -in /tmp/ima-pubkey.der -text -noout"
 )
 
-# Create an fs-verity-protected copy of the client on the main filesystem. The
-# driver rejects signing requests from executables without fs-verity protection.
-attester.succeed(
-    "mkdir -p /var/lib/tarako && "
-    "cp $(which tarako-app) /var/lib/tarako/ && "
-    "fsverity enable --block-size=1024 /var/lib/tarako/tarako-app"
+# Start the disabled-at-boot Attester service. Its service script copies the Go
+# webserver to mutable storage, enables fs-verity, and execs that same file as
+# the long-running process that invokes TARAKO_SIGN_DATA.
+attester.succeed("systemctl start tarako-attester.service")
+attester.wait_for_unit("tarako-attester.service")
+fsverity_output = attester.wait_until_succeeds(
+    "fsverity measure /var/lib/tarako/tarako-attester",
+    timeout=30,
 )
-fsverity_output = attester.succeed("fsverity measure /var/lib/tarako/tarako-app")
 fsverity_digest = bytes.fromhex(fsverity_output.split()[0].split(":", 1)[1])
 
-attester.succeed("nohup tarako-responder > /tmp/responder.log 2>&1 &")
-
-# Send a fresh challenge through the verifier VM.
-nonce = os.urandom(32)
-out = verifier.succeed(f"tarako-client attester {nonce.hex()}")
-print(out)
-
-for heading in ("TARAKO_HELLO", "TARAKO_GET_PUBKEY", "TARAKO_SIGN_DATA"):
-    assert heading in out
-
-# Verify the exact input hashed and signed by the kernel.
-user_data = nonce + bytes(128 - len(nonce))
-response_user_data = bytes.fromhex(value_on_line(out, "user data:"))
-assert response_user_data == user_data, "nonce or zero padding changed"
-
-message = fsverity_digest + user_data
-kernel_hash = value_on_line(out, "hash:")
-expected_hash = hashlib.sha256(message).hexdigest()
-assert kernel_hash == expected_hash, f"kernel hash mismatch: {kernel_hash} != {expected_hash}"
-
-# Verify that IMA and the ioctl expose the same key, then verify the signature.
-pubkey_der_hex = value_after_heading(out, "public key (33 bytes) DER:")
-signature_der_hex = value_after_heading(out, "signature DER:")
-assert bytes.fromhex(pubkey_der_hex).endswith(pubkey), (
-    "IMA key differs from the ioctl public key"
+# Provision the approved executable digest and measured TAK public key as the
+# appraisal policy of the already-running Verifier. TDX/IMA appraisal is
+# outside this test; the network flow tests only nonce-bound Tarako Quotes.
+verifier.succeed("install -d -m 700 /var/lib/tarako")
+write_hex(verifier, "/var/lib/tarako/trusted-tak.bin", pubkey.hex())
+verifier.succeed(
+    f"printf '%s\\n' '{fsverity_digest.hex()}' "
+    "> /var/lib/tarako/approved-digest"
 )
 
-write_hex("/tmp/pubkey.der", pubkey_der_hex)
-write_hex("/tmp/signature.der", signature_der_hex)
-write_hex("/tmp/message.bin", message.hex())
-verification = attester.succeed(
-    "openssl dgst -sha256 -verify /tmp/pubkey.der -keyform DER "
-    "-signature /tmp/signature.der /tmp/message.bin"
+# Repeat identical Client requests. The Verifier must generate a distinct nonce
+# and request binding for each one, verify D || U and TAKpriv's signature, and
+# return an accepted result. The Client never selects a nonce; it relays the
+# Verifier-generated nonce to the Attester with the application request.
+request_value = "repeatable-client-request"
+client_command = (
+    "tarako-client "
+    "--trusted-root-ca /etc/tarako/root-ca.crt "
+    f"verifier attester {request_value}"
 )
-assert "Verified OK" in verification, f"signature verification failed: {verification}"
+first = json.loads(client.succeed(client_command))
+second = json.loads(client.succeed(client_command))
+print("first result:", first)
+print("second result:", second)
+
+for result in (first, second):
+    assert result["accepted"] is True
+    assert result["request"] == request_value
+    assert result["digest"] == fsverity_digest.hex()
+    assert len(bytes.fromhex(result["nonce"])) == 32
+
+    binding = expected_request_binding(request_value, result["nonce"])
+    assert result["request_binding"] == binding.hex()
+    user_data = binding + bytes(128 - len(binding))
+    expected_hash = hashlib.sha256(fsverity_digest + user_data).hexdigest()
+    assert result["kernel_hash"] == expected_hash
+
+assert first["nonce"] != second["nonce"], "Verifier reused a request nonce"
+assert first["request_binding"] != second["request_binding"], (
+    "identical requests were not bound to distinct Verifier nonces"
+)

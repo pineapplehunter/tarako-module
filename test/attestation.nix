@@ -27,10 +27,7 @@ testers.runNixOSTest {
       let
         tarako-mod = config.boot.kernelPackages.callPackage ../driver/package.nix { };
         tarako-app = pkgs.pkgsStatic.callPackage ../app/package.nix { };
-
-        tarako-responder = pkgs.writers.writePython3Bin "tarako-responder" {
-          libraries = [ pkgs.python3Packages.flask ];
-        } ./responder.py;
+        tarako-attester = pkgs.callPackage ../attester/package.nix { };
 
         tdx-attest = pkgs.writers.writePython3Bin "tdx-attest" { } ./tdx-attest.py;
         tpm-quote = pkgs.writers.writePython3Bin "tpm-quote" { } ./tpm-quote.py;
@@ -61,7 +58,7 @@ testers.runNixOSTest {
         environment = {
           systemPackages = [
             tarako-app
-            tarako-responder
+            tarako-attester
             pkgs.e2fsprogs
             pkgs.fsverity-utils
             pkgs.openssl
@@ -91,6 +88,33 @@ testers.runNixOSTest {
         };
 
         networking.firewall.allowedTCPPorts = [ 5000 ];
+
+        # Deliberately has no wantedBy: the test starts it after enabling the
+        # root filesystem's verity feature. The service itself installs and
+        # protects the exact executable that becomes the main process.
+        systemd.services.tarako-attester = {
+          description = "Tarako Quote Attester";
+          after = [ "network.target" ];
+          path = [
+            pkgs.coreutils
+            pkgs.fsverity-utils
+          ];
+          script = ''
+            install -Dm755 \
+              ${tarako-attester}/bin/tarako-attester \
+              /var/lib/tarako/tarako-attester.new
+            fsverity enable --block-size=1024 \
+              /var/lib/tarako/tarako-attester.new
+            mv -f \
+              /var/lib/tarako/tarako-attester.new \
+              /var/lib/tarako/tarako-attester
+            exec /var/lib/tarako/tarako-attester
+          '';
+          serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = 1;
+          };
+        };
 
         virtualisation = {
           cores = lib.mkIf tdx 4;
@@ -125,12 +149,64 @@ testers.runNixOSTest {
     verifier =
       { pkgs, ... }:
       let
-        tarako-client = pkgs.writers.writePython3Bin "tarako-client" {
-          libraries = [ pkgs.python3Packages.requests ];
-        } (builtins.readFile ./client.py);
+        tarako-verifier = pkgs.writers.writePython3Bin "tarako-verifier" {
+          libraries = with pkgs.python3Packages; [
+            cryptography
+            flask
+          ];
+        } ./verifier.py;
       in
       {
-        environment.systemPackages = [ tarako-client ];
+        environment = {
+          systemPackages = [
+            tarako-verifier
+            pkgs.xxd
+          ];
+          etc = {
+            "tarako/verifier.crt".source = ./verifier.crt;
+            "tarako/verifier-key.pem" = {
+              source = ./verifier-key.pem;
+              mode = "0400";
+            };
+          };
+        };
+        networking.firewall.allowedTCPPorts = [ 5001 ];
+
+        systemd.services.tarako-verifier = {
+          description = "Tarako Quote Verifier";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "network.target" ];
+          serviceConfig = {
+            ExecStart = lib.concatStringsSep " " [
+              "${tarako-verifier}/bin/tarako-verifier"
+              "--policy-directory /var/lib/tarako"
+              "--certificate /etc/tarako/verifier.crt"
+              "--signing-key /etc/tarako/verifier-key.pem"
+            ];
+            Restart = "on-failure";
+            RestartSec = 1;
+          };
+        };
+      };
+
+    client =
+      { pkgs, ... }:
+      let
+        tarako-client = pkgs.writers.writePython3Bin "tarako-client" {
+          libraries = with pkgs.python3Packages; [
+            cryptography
+            requests
+          ];
+        } ./client.py;
+      in
+      {
+        environment = {
+          systemPackages = [
+            tarako-client
+            pkgs.openssl
+          ];
+          etc."tarako/root-ca.crt".source = ./root-ca.crt;
+        };
       };
   };
 
