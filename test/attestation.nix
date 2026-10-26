@@ -51,6 +51,7 @@ testers.runNixOSTest {
         boot.kernelParams = [
           "ima_policy=critical_data"
           "ima_policy=tcb"
+          "sysctl.kernel.yama.ptrace_scope=3"
         ];
         boot.extraModulePackages = [ tarako-mod ];
         boot.kernelModules = [ "tarako" ] ++ lib.optional tdx "tdx_guest";

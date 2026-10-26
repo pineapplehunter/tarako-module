@@ -83,6 +83,9 @@ attester.succeed(
 # Start the disabled-at-boot Attester service. Its service script copies the Go
 # webserver to mutable storage, enables fs-verity, and execs that same file as
 # the long-running process that invokes TARAKO_SIGN_DATA.
+# Confirm the boot parameter disabled ptrace before the attestation flow.
+assert "sysctl.kernel.yama.ptrace_scope=3" in attester.succeed("cat /proc/cmdline").split()
+assert attester.succeed("sysctl -n kernel.yama.ptrace_scope").strip() == "3"
 attester.succeed("systemctl start tarako-attester.service")
 attester.wait_for_unit("tarako-attester.service")
 fsverity_output = attester.wait_until_succeeds(
@@ -90,6 +93,39 @@ fsverity_output = attester.wait_until_succeeds(
     timeout=30,
 )
 fsverity_digest = bytes.fromhex(fsverity_output.split()[0].split(":", 1)[1])
+
+with subtest("root cannot ptrace or read Attester memory"):
+    pid = int(attester.succeed("systemctl show -p MainPID --value tarako-attester.service"))
+    assert pid > 0, "Attester is not running"
+    attester.succeed(
+        f"""python3 - {pid} <<'PY'
+import ctypes
+import errno
+import os
+import sys
+
+pid = int(sys.argv[1])
+assert os.geteuid() == 0, "probe must run as root"
+with open("/proc/self/status") as status:
+    caps = next(line.split()[1] for line in status if line.startswith("CapEff:"))
+assert int(caps, 16) & (1 << 19), "probe must have CAP_SYS_PTRACE"
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ptrace.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+libc.ptrace.restype = ctypes.c_long
+PTRACE_ATTACH = 16
+assert libc.ptrace(PTRACE_ATTACH, pid, None, None) == -1, "root PTRACE_ATTACH succeeded"
+assert ctypes.get_errno() == errno.EPERM, "PTRACE_ATTACH failed for an unexpected reason"
+
+try:
+    with open("/proc/%d/mem" % pid, "rb"):
+        pass
+except PermissionError:
+    pass
+else:
+    raise AssertionError("root could open Attester memory for reading")
+PY"""
+    )
 
 # Provision the approved executable digest and measured TAK public key as the
 # appraisal policy of the already-running Verifier. TDX/IMA appraisal is
