@@ -17,6 +17,29 @@ def wait_for_tarako():
     attester.wait_until_succeeds("grep -q '^tarako ' /proc/modules", timeout=30)
 
 
+def check_module_lockdown():
+    with subtest("module loading locked in initramfs, even for root"):
+        assert attester.succeed("id -u").strip() == "0"
+        caps = attester.succeed("grep '^CapEff:' /proc/self/status").split()[1]
+        assert int(caps, 16) & (1 << 16), "probe must have CAP_SYS_MODULE"
+        assert attester.succeed("sysctl -n kernel.modules_disabled").strip() == "1"
+        initrd_modules = set(attester.succeed("cat /run/tarako-initrd-modules").split())
+        loaded_modules = {
+            line.split()[0] for line in attester.succeed("cat /proc/modules").splitlines()
+        }
+        assert "tarako" in initrd_modules, "Tarako was not loaded in initramfs"
+        assert loaded_modules == initrd_modules, "module set changed after initramfs"
+
+        # dummy exists on disk but was not preloaded: failure must be EPERM,
+        # not a missing module. Also confirm unloading and undoing the lock fail.
+        assert "dummy" not in loaded_modules
+        attester.succeed("modinfo -n dummy")
+        assert "Operation not permitted" in attester.fail("modprobe dummy 2>&1")
+        assert "Operation not permitted" in attester.fail("rmmod tarako 2>&1")
+        attester.fail("sysctl -w kernel.modules_disabled=0")
+        assert attester.succeed("sysctl -n kernel.modules_disabled").strip() == "1"
+
+
 def read_measured_pubkey():
     ima_log = attester.wait_until_succeeds(
         f"grep -q '{PUBKEY_EVENT}' {IMA_LOG} && cat {IMA_LOG}",
@@ -59,6 +82,7 @@ verifier.wait_for_unit("tarako-verifier.service")
 # Verify that key generation is fresh across boots.
 attester.wait_for_unit("default.target")
 wait_for_tarako()
+check_module_lockdown()
 first_pubkey = read_measured_pubkey()
 
 # NixOS VM roots are ext4, but their default mkfs feature set does not include
@@ -70,6 +94,7 @@ attester.succeed(f"tune2fs -O verity {root_device}")
 attester.reboot()
 attester.wait_for_unit("default.target")
 wait_for_tarako()
+check_module_lockdown()
 pubkey = read_measured_pubkey()
 assert pubkey != first_pubkey, "public key was reused across boots"
 
