@@ -21,6 +21,10 @@ testers.runNixOSTest {
     forceAccel = true;
   };
 
+  # Benchmarks use only the attester's test backdoor and QGS over vsock.
+  # Avoid requiring a VDE-capable QEMU when no inter-VM network is used.
+  nodeDefaults.virtualisation.vlans = lib.mkIf benchmark [ ];
+
   nodes = {
     attester =
       { config, pkgs, ... }:
@@ -29,7 +33,31 @@ testers.runNixOSTest {
         tarako-app = pkgs.pkgsStatic.callPackage ../app/package.nix { };
         tarako-attester = pkgs.callPackage ../attester/package.nix { };
 
-        tdx-attest = pkgs.writers.writePython3Bin "tdx-attest" { } ./tdx-attest.py;
+        vendor-qemu = pkgs.callPackage ../tdx/qemu.nix { };
+        tdvf = pkgs.callPackage ../tdx/firmware.nix { };
+        # Default to pinned vendor QEMU and source-built TDVF, retaining overrides.
+        tdx-qemu = pkgs.symlinkJoin {
+          name = "tarako-tdx-qemu";
+          paths = [ vendor-qemu ];
+          passthru.stdenv = vendor-qemu.stdenv;
+          postBuild = ''
+            rm "$out/bin/qemu-system-x86_64"
+            ln -s ${pkgs.writeShellScript "tarako-tdx-qemu" ''
+              exec "''${TARAKO_TDX_QEMU:-${vendor-qemu}/bin/qemu-system-x86_64}" "$@"
+            ''} "$out/bin/qemu-system-x86_64"
+          '';
+        };
+
+        tdx-verify = pkgs.callPackage ../tdx/verify.nix { };
+        tdx-attest = pkgs.symlinkJoin {
+          name = "tdx-attest";
+          paths = [ (pkgs.writers.writePython3Bin "tdx-attest" { } ./tdx-attest.py) ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            wrapProgram "$out/bin/tdx-attest" \
+              --prefix PATH : ${lib.makeBinPath [ tdx-verify ]}
+          '';
+        };
         tpm-quote = pkgs.writers.writePython3Bin "tpm-quote" { } ./tpm-quote.py;
         tarako-quote = pkgs.writers.writePython3Bin "tarako-quote" { } ./tarako-quote.py;
         quote-bench = pkgs.writers.writePython3Bin "quote-bench" { } ./quote-bench.py;
@@ -114,6 +142,7 @@ testers.runNixOSTest {
             bench-tdx-quote
             quote-bench
             tdx-attest
+            tdx-verify
           ];
           etc."ima/ima-policy".text = ''
             measure func=MODULE_CHECK
@@ -155,14 +184,24 @@ testers.runNixOSTest {
         virtualisation = {
           cores = lib.mkIf tdx 4;
           memorySize = lib.mkIf tdx 4096;
+          graphics = lib.mkIf tdx false;
+
+          # vhost-user virtiofs cannot handle TDX's required access-platform bit.
+          # Put the store on a block device and remove all host shared folders.
+          useNixStoreImage = lib.mkIf tdx true;
+          mountHostNixStore = lib.mkIf tdx false;
+          sharedDirectories = lib.mkIf tdx (lib.mkForce { });
 
           # qemu-vm.nix puts the kernel, initrd and NixOS closure registration
           # on QEMU's command line, so no bootable disk image is needed. TDX
-          # still requires TDVF to initialize the trust domain, supplied by
-          # the packaged OVMF-inteltdx image below.
+          # still requires TDVF to initialize the trust domain. Build the dedicated
+          # IntelTdxX64 firmware from source, retaining a runtime override.
           directBoot.enable = lib.mkIf tdx true;
           useBootLoader = lib.mkIf tdx false;
           useEFIBoot = !tdx;
+          # qemu-vm adds smm=on for its default OVMFFull even without EFI boot.
+          # Use non-SMM OVMF metadata; the actual TDVF is supplied via -bios.
+          efi.OVMF = lib.mkIf tdx pkgs.OVMF;
 
           tpm = {
             enable = true;
@@ -170,11 +209,16 @@ testers.runNixOSTest {
           };
 
           qemu = lib.mkIf tdx {
+            package = lib.mkForce tdx-qemu;
             enableSharedMemory = false;
             options = [
-              "-machine q35,kernel-irqchip=split,confidential-guest-support=tdx0"
+              "-machine q35,smm=off,kernel-irqchip=split,confidential-guest-support=tdx0"
               "-cpu host,+x2apic"
-              "-bios ${pkgs.OVMF-inteltdx.firmware}"
+              # -nographic alone leaves VGA present; its emulation can attempt
+              # register access forbidden for production TDX guests.
+              "-nodefaults"
+              "-vga none"
+              ''-bios "''${TARAKO_TDX_FIRMWARE:-${tdvf.firmware}}"''
               "-device vhost-vsock-pci,guest-cid=3"
               "-object '{\"qom-type\":\"tdx-guest\",\"id\":\"tdx0\",\"quote-generation-socket\":{\"type\":\"vsock\",\"cid\":\"2\",\"port\":\"4050\"}}'"
             ];
@@ -246,12 +290,8 @@ testers.runNixOSTest {
       };
   };
 
-  testScript =
-    if benchmark then
-      ''
-        TDX = ${if tdx then "True" else "False"}
-        ${lib.readFile ./benchmark.py}
-      ''
-    else
-      lib.readFile ./attestation.py;
+  testScript = ''
+    TDX = ${if tdx then "True" else "False"}
+    ${lib.readFile (if benchmark then ./benchmark.py else ./attestation.py)}
+  '';
 }

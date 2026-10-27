@@ -1,0 +1,116 @@
+Subject: [PATCH] i386/tdx: report QGS timeout phases and host-side timings
+
+A generic GHCI error alone does not distinguish a timeout from an invalid
+QGS response. Report the timeout phase, response error code, byte counts,
+and monotonic host-side stage durations. Errors always get a timing summary;
+set TARAKO_TDX_QUOTE_TRACE=1 to include successful requests as well.
+
+Apply after qemu-qgs-protocol.patch.
+
+--- a/target/i386/kvm/tdx-quote-generator.h
++++ b/target/i386/kvm/tdx-quote-generator.h
+@@ -80,6 +80,10 @@
+     uint64_t receive_buf_received;
+ 
+     uint64_t status_code;
++    int64_t started_us;
++    int64_t connected_us;
++    int64_t sent_us;
++    int64_t first_reply_us;
+     struct tdx_get_quote_header hdr;
+ 
+     QIOChannelSocket *sioc;
+--- a/target/i386/kvm/tdx-quote-generator.c
++++ b/target/i386/kvm/tdx-quote-generator.c
+@@ -39,6 +39,25 @@
+ 
+ static void tdx_generate_quote_cleanup(struct tdx_generate_quote_task *task)
+ {
++    if (task->status_code != TDX_VP_GET_QUOTE_SUCCESS ||
++        g_strcmp0(g_getenv("TARAKO_TDX_QUOTE_TRACE"), "1") == 0) {
++        int64_t now = g_get_monotonic_time();
++
++        error_report("TDX: QGS timings (host wall clock, us): "
++                     "connect=%" PRId64 " send=%" PRId64
++                     " wait_first_byte=%" PRId64 " receive=%" PRId64
++                     " total=%" PRId64 "; tx=%" PRIu64 "/%" PRIu64
++                     " rx=%" PRIu64 "; status=0x%016" PRIx64,
++                     task->connected_us ?
++                         task->connected_us - task->started_us : -1,
++                     task->sent_us ? task->sent_us - task->connected_us : -1,
++                     task->first_reply_us ?
++                         task->first_reply_us - task->sent_us : -1,
++                     task->first_reply_us ? now - task->first_reply_us : -1,
++                     now - task->started_us, task->send_data_sent,
++                     task->send_data_size, task->receive_buf_received,
++                     task->status_code);
++    }
+     timer_del(&task->timer);
+ 
+     g_clear_handle_id(&task->watch, g_source_remove);
+@@ -79,12 +98,25 @@
+         goto end;
+     }
+ 
++    if (!task->receive_buf_received) {
++        task->first_reply_us = g_get_monotonic_time();
++    }
+     task->receive_buf_received += ret;
+     complete = tdx_qgs_parse_response((uint8_t *)task->receive_buf,
+                                       task->receive_buf_received,
+                                       task->payload_len, &quote_size);
+     if (complete < 0) {
+-        error_report("TDX: invalid QGS GetQuote response");
++        error_report("TDX: invalid QGS GetQuote response (%" PRIu64 " bytes)",
++                     task->receive_buf_received);
++        if (task->receive_buf_received >= 20) {
++            const uint8_t *p = (const uint8_t *)task->receive_buf;
++
++            error_report("TDX: QGS header: version=%u.%u type=%u "
++                         "size=%u error=0x%08x",
++                         p[4] | p[5] << 8, p[6] | p[7] << 8,
++                         tdx_qgs_le32(p + 8), tdx_qgs_le32(p + 12),
++                         tdx_qgs_le32(p + 16));
++        }
+         task->status_code = TDX_VP_GET_QUOTE_ERROR;
+         goto end;
+     }
+@@ -125,6 +157,7 @@
+     task->send_data_sent += ret;
+ 
+     if (task->send_data_sent == task->send_data_size) {
++        task->sent_us = g_get_monotonic_time();
+         task->watch = qio_channel_add_watch(QIO_CHANNEL(task->sioc), G_IO_IN,
+                                             tdx_get_quote_read, task, NULL);
+         goto end;
+@@ -150,6 +183,7 @@
+         return;
+     }
+ 
++    task->connected_us = g_get_monotonic_time();
+     task->watch = qio_channel_add_watch(QIO_CHANNEL(task->sioc), G_IO_OUT,
+                                         tdx_send_report, task, NULL);
+ }
+@@ -159,7 +193,13 @@
+ static void getquote_expired(void *opaque)
+ {
+     struct tdx_generate_quote_task *task = opaque;
++    const char *phase = !task->connected_us ? "connecting to QGS" :
++                        !task->sent_us ? "sending request" :
++                        !task->first_reply_us ? "waiting for QGS reply" :
++                                               "receiving QGS reply";
+ 
++    error_report("TDX: QGS transaction timed out after %d ms of VM time "
++                 "while %s", TRANSACTION_TIMEOUT, phase);
+     task->status_code = TDX_VP_GET_QUOTE_ERROR;
+     tdx_generate_quote_cleanup(task);
+ }
+@@ -178,6 +218,8 @@
+     struct TdxQuoteGenerator *quote_gen = task->quote_gen;
+     QIOChannelSocket *sioc;
+ 
++    task->started_us = g_get_monotonic_time();
++
+     /* The guest supplies a raw TDREPORT; QGS expects a framed GetQuote. */
+     task->send_data = g_realloc(task->send_data,
+                                task->send_data_size + TDX_QGS_HEADER_SIZE);

@@ -25,29 +25,24 @@ TARGETS = {
 }
 
 
-def parse_nonce(value: str | None) -> bytes:
-    if value is None:
-        return os.urandom(32)
-    try:
-        nonce = bytes.fromhex(value)
-    except ValueError as error:
-        message = f"invalid hexadecimal nonce: {error}"
-        raise SystemExit(message) from error
-    if not nonce or len(nonce) > 64:
-        raise SystemExit("nonce must contain between 1 and 64 bytes")
-    return nonce
-
-
-def measure(target: str, nonce: bytes) -> float:
+def measure(target: str, tdx_collateral: bool = False) -> float:
     command, pattern, _ = TARGETS[target]
+    # Freshness applies to every invocation, including warmups and all targets.
+    nonce = os.urandom(32)
+    arguments = (*command, nonce.hex())
+    if target == "tdx" and tdx_collateral:
+        arguments += ("--verify-collateral",)
     result = subprocess.run(
-        (*command, nonce.hex()),
-        check=True,
+        arguments,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     output = result.stdout + result.stderr
+    if result.returncode != 0:
+        raise SystemExit(f"{target} quote command failed:\n{output}")
+    if target == "tdx" and "TDX verification: OK" not in output:
+        raise SystemExit(f"TDX quote was not verified:\n{output}")
     match = pattern.search(output)
     if match is None:
         raise SystemExit(
@@ -69,36 +64,55 @@ def print_results(target: str, values: list[float]) -> None:
     print(f"  Runs:            {len(values)}")
 
 
-def benchmark(target: str, nonce: bytes, warmup: int, runs: int) -> None:
+def benchmark(
+    target: str, warmup: int, runs: int, tdx_collateral: bool = False
+) -> None:
     _, _, label = TARGETS[target]
     print(f"Warming up {label} ({warmup} runs)")
     for _ in range(warmup):
-        measure(target, nonce)
+        measure(target, tdx_collateral)
 
     print(f"Measuring {label} ({runs} runs)")
-    values = [measure(target, nonce) for _ in range(runs)]
+    values = [measure(target, tdx_collateral) for _ in range(runs)]
     print_results(target, values)
+    if target == "tdx":
+        scope = (
+            "signatures, Intel chain, nonce, QE identity, TCB, CRLs"
+            if tdx_collateral
+            else "signatures, Intel-rooted certificates, nonce "
+            "(offline; no QE identity/TCB/revocation appraisal)"
+        )
+        print(f"  Verification:    all quotes passed: {scope}")
+        print("  Verification time is excluded from quote-generation latency.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", choices=(*TARGETS, "all"))
-    parser.add_argument("nonce", nargs="?", help="1 to 64 bytes of hex")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument(
+        "--tdx-collateral",
+        action="store_true",
+        help="also check online PCS collateral, QE identity, TCB and CRLs",
+    )
     args = parser.parse_args()
     if args.warmup < 0:
         parser.error("--warmup cannot be negative")
     if args.runs < 1:
         parser.error("--runs must be at least 1")
 
-    nonce = parse_nonce(args.nonce)
-    print(f"Nonce: {nonce.hex()}")
+    if args.tdx_collateral and args.target not in ("tdx", "all"):
+        parser.error("--tdx-collateral requires target tdx or all")
+
+    print(
+        "Nonce: fresh random 32-byte value per invocation (including warmups)"
+    )
     targets = TARGETS if args.target == "all" else (args.target,)
     for index, target in enumerate(targets):
         if index:
             print()
-        benchmark(target, nonce, args.warmup, args.runs)
+        benchmark(target, args.warmup, args.runs, args.tdx_collateral)
 
 
 if __name__ == "__main__":

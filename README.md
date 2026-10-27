@@ -85,18 +85,94 @@ nix build .#tdx-test-driver
 ./result/bin/nixos-test-driver
 ```
 
-QEMU is supplied by the locked nixpkgs revision (currently QEMU 11.0.2 with TDX and VDE support). The firmware is built automatically from nixpkgs' `OVMF-inteltdx` package using edk2's `OvmfPkg/IntelTdx/IntelTdxX64.dsc` Config-B target. It can also be built separately with `nix build .#tdx-firmware`. The host must have KVM access and a quote-generation service listening on vsock CID 2, port 4050. The attester uses QEMU direct kernel boot through TDVF, 4 CPUs, 4 GiB RAM, and a CRB vTPM backed by `swtpm`. Its TPM state is kept in `tarako-attestation-tdx-attester-swtpm` by default; set `NIX_SWTPM_DIR` to choose another location. Extra test-driver options, such as `--keep-machine-state`, can be passed normally.
+The TDX attester defaults to pinned vendor QEMU and source-built TDVF for the
+experiment's `6.8.0-1028-intel` host kernel.
+
+> **Intended host environment:** The added `tdx-qemu` package targets Ubuntu
+> 24.04.4 LTS (Noble), x86_64, with the vendor Intel kernel shown below. It is
+> not intended as a general-purpose QEMU replacement for other TDX host stacks.
+> The hostname has been anonymized.
+
+```text
+Linux <tdx-host> 6.8.0-1028-intel #35-Ubuntu SMP PREEMPT_DYNAMIC Fri May 23 17:34:54 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+No LSB modules are available.
+Distributor ID: Ubuntu
+Description:    Ubuntu 24.04.4 LTS
+Release:        24.04
+Codename:       noble
+```
+
+- **QEMU:** 8.2.2 built from source with the complete patch series from Ubuntu
+  `2:8.2.2+ds-0ubuntu1.4+tdx1.1`, with VDE networking enabled. The upstream tarball
+  and [Canonical TDX PPA](https://ppa.launchpadcontent.net/kobuk-team/tdx-release/ubuntu/)
+  patch archive are hash-pinned in `tdx/qemu.nix`. A local
+  `tdx/qemu-qgs-protocol.patch` adds Intel QGS request/response framing, rejects
+  EOF/empty responses, and preserves 64-bit GetQuote error codes.
+- **TDVF:** EDK II's dedicated `IntelTdxX64` Config-B firmware, built from source
+  using nixpkgs' `OVMF-inteltdx` builder. `flake.lock` pins the EDK II source and
+  submodules (currently `edk2-stable202608`). The PPA's prebuilt `OVMF.tdx.fd` is
+  not used: it failed to boot in this experiment.
+
+The firmware builder follows the [EDK II TDVF source-build steps](https://github.com/tianocore/edk2/blob/edk2-stable202608/OvmfPkg/IntelTdx/README.md):
+build BaseTools, source `edksetup.sh`, and run
+`build -p OvmfPkg/IntelTdx/IntelTdxX64.dsc -a X64 -t GCC -b RELEASE`.
+No host-installed QEMU or manually supplied firmware is needed. Build them
+independently with `nix build .#tdx-qemu` and `nix build .#tdx-firmware`; inspect
+QEMU with `nix run .#tdx-qemu -- --version` and locate the firmware with
+`nix eval --raw .#tdx-firmware.firmware`.
+The Client and Verifier still use nixpkgs' QEMU. The vendor QEMU is for the older
+TDX host ABI, not a replacement for upstream QEMU on newer upstream TDX hosts.
+
+The host must have KVM access and a quote-generation service listening on vsock
+CID 2, port 4050. The attester uses direct kernel boot through TDVF, 4 CPUs,
+4 GiB RAM, and a CRB vTPM backed by `swtpm`. Its TPM state is kept in
+`tarako-attestation-tdx-attester-swtpm` by default; set `NIX_SWTPM_DIR` to choose
+another location. Extra test-driver options, such as `--keep-machine-state`,
+can be passed normally.
+
+For debugging other vendor builds, optional runtime overrides remain available:
+
+```sh
+TARAKO_TDX_QEMU=/usr/bin/qemu-system-x86_64 \
+TARAKO_TDX_FIRMWARE=/absolute/path/to/working/OVMF.fd \
+nix run -L .#tdx-quote-benchmark-driver
+```
+
+These overrides affect only the TDX attester, work with all TDX drivers, and do
+not require an impure Nix evaluation. Without them, the packaged QEMU and TDVF
+remain the defaults. Use absolute paths: the test driver changes the working
+directory for each VM. The full three-node attestation test requires VDE support
+in any overridden QEMU (check its `-netdev help` output); the packaged build
+includes VDE.
+Benchmark mode disables the test VLANs and does not require VDE; TDX quoting
+still uses the host QGS over vsock. The TDX attester uses direct kernel boot
+and an EROFS Nix store block image, generated at startup, instead of virtiofs.
+TDX's required `iommu_platform` setting is incompatible with this virtiofs device.
+The attester is explicitly headless (`-nodefaults -vga none`), with the serial
+console preferred; hiding the display with `-nographic` alone leaves a VGA device
+whose emulation can trigger forbidden register accesses on this TDX stack.
+Host shared folders are disabled for the TDX attester, so shared-folder-based
+test-driver copy helpers are unavailable; use `copy_from_host_via_shell` for
+host-to-guest transfers. The existing tests do not use shared-folder copy helpers.
 
 ### Automated quote benchmark on TDX
 
 Build the benchmark driver, copy the result to the TDX host if necessary, and run it outside the Nix build sandbox:
 
 ```sh
-nix build .#tdx-quote-benchmark-driver
-./result/bin/nixos-test-driver
+nix run -L .#tdx-quote-benchmark-driver
 ```
 
-The benchmark boots the TDX attester, generates one random 32-byte nonce, and uses it for TDX, Tarako, and TPM measurements. It performs two warmups and twenty measured runs of each operation. The host quote-generation service must be available on vsock CID 2, port 4050.
+This automatically builds the pinned QEMU, firmware, and guest. No
+`TARAKO_TDX_QEMU` or `TARAKO_TDX_FIRMWARE` overrides are needed. To build without
+running, use `nix build .#tdx-quote-benchmark-driver` and copy its closure to the
+TDX host.
+
+The benchmark boots the TDX attester and performs two warmups and twenty measured runs of each operation. Every invocation, including warmups, uses a fresh random 32-byte nonce for TDX, Tarako/TQ, and TPM. The host quote-generation service must be available on vsock CID 2, port 4050. Every TDX quote must pass the offline cryptographic and nonce-binding checks described below before its timing is accepted.
+
+TDX CPUs cannot be reset by this QEMU stack. After enabling fs-verity, the TDX
+tests power off the attester and launch a new QEMU process with the same disk
+rather than requesting an in-guest reboot. This also generates a fresh Tarako key.
 
 The non-TDX variant remains available as `nix build .#checks.x86_64-linux.quote-benchmark`; it skips only the TDX quote.
 
@@ -134,15 +210,49 @@ The commands print the measured operation latency and save their outputs under `
 The dedicated benchmark commands use each tool's internal operation timer, excluding Python and shell startup. By default they perform one warmup and ten measured runs and display mean, standard deviation, median, and range:
 
 ```sh
-bench-tdx-quote "$nonce"
-bench-tpm-quote "$nonce"
-bench-tarako-quote "$nonce"
+bench-tdx-quote
+bench-tpm-quote
+bench-tarako-quote
 
-# Benchmark all three with the same nonce and custom run counts:
-quote-bench all "$nonce" --warmup 2 --runs 20
+# Benchmark all three, each invocation using a fresh nonce:
+quote-bench all --warmup 2 --runs 20
 ```
 
-The nonce is optional and defaults to a random 32-byte value. Options accepted by every benchmark command are `--warmup N` and `--runs N`.
+Benchmark commands always generate a fresh random 32-byte nonce per invocation, including warmups, and no longer accept a fixed nonce argument. Single-operation commands still accept explicit nonces. Options accepted by every benchmark command are `--warmup N` and `--runs N`.
+
+### TDX quote verification
+
+`tdx-attest quote` verifies every returned quote with the pinned `go-tdx-guest` verifier (`tdx-verify`). The default offline checks verify the quote signature, QE report signature, attestation-key binding, PCK certificate chain against the verifier's embedded Intel root, and exact 64-byte REPORTDATA (the supplied nonce padded with zeros). Verification runs **after** the generation timer stops; its separate duration is not included in benchmark latency. Failed verification aborts the command and benchmark, preserving the rejected quote at `/tmp/tdquote.bin` (or `--output`) for diagnosis.
+
+Offline verification does **not** check current QE identity, TCB status, or revocation collateral. It also does not establish an approved guest measurement/RTMR policy. For online Intel PCS collateral, QE identity, TCB, and CRL checks:
+
+```sh
+# Inside the guest, with outbound HTTPS access:
+tdx-attest quote --verify-collateral
+bench-tdx-quote --tdx-collateral --warmup 1 --runs 10
+```
+
+Online verification fails if collateral cannot be fetched or the platform's TCB is not accepted; there is no automatic fallback to offline mode. To verify a saved quote elsewhere, build the standalone verifier with `nix build .#tdx-verify`, copy `/tmp/tdquote.bin`, and supply the original nonce, zero-padded to 64 bytes:
+
+```sh
+report_data=$(python3 -c 'import sys; print(bytes.fromhex(sys.argv[1]).ljust(64, b"\0").hex())' "$nonce")
+./result/bin/tdx-verify -in=tdquote.bin -report_data="$report_data" \
+  -get_collateral=true -check_crl=true
+```
+
+A latency close to 5 ms can still reflect the guest's completion-polling floor rather than the exact host signing duration; successful cryptographic verification establishes that the returned evidence is signed and bound to the requested nonce, not that generation consumed the whole measured interval.
+
+If an older build reports `wrote 0 bytes` / `raw quote is empty`, that is a failed quote operation, not a fast valid quote. The unpatched vendor QEMU incorrectly treated EOF as success; its 32-bit status conversion could also turn the 64-bit generic error into success. The patched QEMU uses framed QGS requests, but framing alone does not establish the cause of a host failure: some Intel QGS versions also support raw TDREPORT requests. Rebuild the test driver to use the patched **host QEMU**, and unset `TARAKO_TDX_QEMU` if it points to an unpatched binary. Verification must not be bypassed.
+
+`GetQuote failed, status=0x8000000000000000` is a generic transport/service error, not a signature-verification result. The diagnostics patch reports which stage reached the 30-second transaction timeout, malformed response headers/QGS error codes, byte counts, and host-monotonic stage timings on failure. Set `TARAKO_TDX_QUOTE_TRACE=1` on the host to report successful requests too:
+
+```sh
+TARAKO_TDX_QUOTE_TRACE=1 nix run -L path:.#tdx-quote-benchmark-driver
+sudo journalctl -u tdx-qgs --since '5 minutes ago' --no-pager
+sudo journalctl -t qgsd --since '5 minutes ago' --no-pager
+```
+
+Timing fields are in microseconds: `connect`, `send`, `wait_first_byte`, `receive`, and `total`; `-1` means the stage has not completed. These are host-side transport/response timings, not a breakdown of QE cryptography. `wait_first_byte` includes QGS processing and transport. Failure summaries include byte progress; if `tx=1052/1052 rx=0`, the framed TDREPORT request was sent but no reply bytes reached QEMU. Check the QGS logs for the underlying service/quoting-library error before changing timeouts. Successful-request logging can perturb the benchmark slightly; leave tracing unset for normal runs.
 
 ## How the signing works
 
@@ -169,7 +279,8 @@ The module can sign the attestation binder from `draft-fossati-seat-early-attest
 - `driver/src/set_once.rs` — atomic once-only cell for global key storage
 - `app/src/main.rs` — userspace ioctl client
 - `test/benchmark.py` — automated TDX, TPM, and Tarako latency benchmark
-- `test/tdx-attest.py` — TDREPORT and TDX quote utility
+- `test/tdx-attest.py` — TDREPORT and verified TDX quote utility
+- `tdx/verify.nix` — pinned upstream TDX signature/certificate/collateral verifier
 - `test/tpm-quote.py` — nonce-bound TPM quote utility
 - `test/tarako-quote.py` — fs-verity setup and nonce-bound Tarako utility
 - `test/root-ca.crt`, `test/verifier.crt`, `test/verifier-key.pem` — test-only Verifier PKI fixtures

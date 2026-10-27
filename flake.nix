@@ -69,11 +69,27 @@
             ];
           });
           checks.quote-benchmark = pkgs.callPackage ./test/attestation.nix { benchmark = true; };
+          checks.quote-tools =
+            pkgs.runCommand "quote-tools-tests"
+              {
+                nativeBuildInputs = [
+                  pkgs.python3
+                  self'.packages.tdx-verify
+                ];
+                TDX_VERIFY_TESTDATA = "${self'.packages.tdx-verify.src}/testing/testdata";
+              }
+              ''
+                cp -r ${./test} test
+                python3 test/quote-tools-test.py -v
+                touch "$out"
+              '';
 
           # Build these on any machine, then run the resulting test driver on
-          # the TDX host (outside the Nix build sandbox). OVMF-inteltdx follows
-          # edk2's IntelTdxX64 (Config-B) build documented upstream.
-          packages.tdx-firmware = pkgs.OVMF-inteltdx.fd;
+          # the TDX host (outside the Nix build sandbox). Pin vendor QEMU for
+          # the 6.8 -intel host kernel and build IntelTdxX64 TDVF from source.
+          packages.tdx-qemu = pkgs.callPackage ./tdx/qemu.nix { };
+          packages.tdx-firmware = pkgs.callPackage ./tdx/firmware.nix { };
+          packages.tdx-verify = pkgs.callPackage ./tdx/verify.nix { };
           packages.tdx-test-driver = (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driver;
           packages.tdx-test-driver-interactive =
             (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driverInteractive;

@@ -74,7 +74,7 @@ def expected_request_binding(request_value, nonce_hex):
     return hashlib.sha256(b"TARAKO-TQ-REQUEST-V1\0" + context).digest()
 
 
-attester.start(allow_reboot=True)
+attester.start(allow_reboot=not TDX)
 verifier.start()
 client.start()
 verifier.wait_for_unit("tarako-verifier.service")
@@ -86,12 +86,17 @@ check_module_lockdown()
 first_pubkey = read_measured_pubkey()
 
 # NixOS VM roots are ext4, but their default mkfs feature set does not include
-# fs-verity. Enable it on the existing root filesystem; the reboot needed for
-# the key-freshness check also makes the kernel observe the new feature.
+# fs-verity. Enable it on the existing root filesystem; the second boot needed
+# for the key-freshness check also makes the kernel observe the new feature.
 root_device = attester.succeed("findmnt -n -o SOURCE /").strip()
 attester.succeed(f"tune2fs -O verity {root_device}")
 
-attester.reboot()
+if TDX:
+    # TDX CPUs cannot reset: start a new trust domain with the same disk.
+    attester.shutdown()
+    attester.start()
+else:
+    attester.reboot()
 attester.wait_for_unit("default.target")
 wait_for_tarako()
 check_module_lockdown()

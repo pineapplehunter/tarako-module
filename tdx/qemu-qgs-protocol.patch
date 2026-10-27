@@ -1,0 +1,146 @@
+Subject: [PATCH] i386/tdx: frame QGS requests and reject empty/error replies
+
+The vendor GetQuote implementation predates the Intel QGS message protocol.
+Wrap the guest's TDREPORT in a QGS GetQuote request, then unwrap only a
+complete, successful, nonempty quote response. EOF must not mean success.
+
+Keep 64-bit GHCI status codes intact (the old cpu_to_le32 truncates the
+generic error to success), and publish output length before completion.
+Initialize watch state so connection failures can safely clean up.
+
+The protocol helpers are supplied in tdx-qgs-protocol.h by the package.
+
+--- a/target/i386/kvm/tdx-quote-generator.c
++++ b/target/i386/kvm/tdx-quote-generator.c
+@@ -17,6 +17,7 @@
+ #include "qapi/qapi-visit-sockets.h"
+ 
+ #include "tdx-quote-generator.h"
++#include "tdx-qgs-protocol.h"
+ 
+ typedef struct TdxQuoteGeneratorClass {
+     DeviceClass parent_class;
+@@ -40,7 +41,7 @@
+ {
+     timer_del(&task->timer);
+ 
+-    g_source_remove(task->watch);
++    g_clear_handle_id(&task->watch, g_source_remove);
+     qio_channel_close(QIO_CHANNEL(task->sioc), NULL);
+     object_unref(OBJECT(task->sioc));
+ 
+@@ -57,7 +58,8 @@
+ {
+     struct tdx_generate_quote_task *task = opaque;
+     Error *err = NULL;
+-    int ret;
++    int ret, complete;
++    size_t quote_size;
+ 
+     ret = qio_channel_read(ioc, task->receive_buf + task->receive_buf_received,
+                            task->payload_len - task->receive_buf_received, &err);
+@@ -71,8 +73,25 @@
+         }
+     }
+ 
++    if (ret == 0) {
++        error_report("TDX: QGS closed connection before a complete quote");
++        task->status_code = TDX_VP_GET_QUOTE_ERROR;
++        goto end;
++    }
++
+     task->receive_buf_received += ret;
+-    if (ret == 0 || task->receive_buf_received == task->payload_len) {
++    complete = tdx_qgs_parse_response((uint8_t *)task->receive_buf,
++                                      task->receive_buf_received,
++                                      task->payload_len, &quote_size);
++    if (complete < 0) {
++        error_report("TDX: invalid QGS GetQuote response");
++        task->status_code = TDX_VP_GET_QUOTE_ERROR;
++        goto end;
++    }
++    if (complete > 0) {
++        memmove(task->receive_buf,
++                task->receive_buf + TDX_QGS_HEADER_SIZE, quote_size);
++        task->receive_buf_received = quote_size;
+         task->status_code = TDX_VP_GET_QUOTE_SUCCESS;
+         goto end;
+     }
+@@ -159,6 +178,14 @@
+     struct TdxQuoteGenerator *quote_gen = task->quote_gen;
+     QIOChannelSocket *sioc;
+ 
++    /* The guest supplies a raw TDREPORT; QGS expects a framed GetQuote. */
++    task->send_data = g_realloc(task->send_data,
++                               task->send_data_size + TDX_QGS_HEADER_SIZE);
++    memmove(task->send_data + TDX_QGS_HEADER_SIZE, task->send_data,
++            task->send_data_size);
++    tdx_qgs_request_header((uint8_t *)task->send_data, task->send_data_size);
++    task->send_data_size += TDX_QGS_HEADER_SIZE;
++
+     sioc = qio_channel_socket_new();
+     task->sioc = sioc;
+ 
+--- a/target/i386/kvm/tdx.c
++++ b/target/i386/kvm/tdx.c
+@@ -970,25 +970,46 @@
+ 
+ static void tdx_get_quote_completion(struct tdx_generate_quote_task *task)
+ {
++    uint64_t status;
+     int ret;
+ 
++    task->hdr.out_len = 0;
++    if (task->status_code == TDX_VP_GET_QUOTE_SUCCESS &&
++        (!task->receive_buf_received ||
++         task->receive_buf_received > task->payload_len)) {
++        task->status_code = TDX_VP_GET_QUOTE_ERROR;
++    }
+     if (task->status_code == TDX_VP_GET_QUOTE_SUCCESS) {
+         ret = address_space_write(&address_space_memory, task->payload_gpa,
+                                   MEMTXATTRS_UNSPECIFIED, task->receive_buf,
+                                   task->receive_buf_received);
+         if (ret != MEMTX_OK) {
+-            error_report("TDX: get-quote: failed to write quote data.\n");
++            error_report("TDX: get-quote: failed to write quote data.");
++            task->status_code = TDX_VP_GET_QUOTE_ERROR;
+         } else {
+-            task->hdr.out_len = cpu_to_le64(task->receive_buf_received);
++            task->hdr.out_len = cpu_to_le32(task->receive_buf_received);
+         }
+     }
+-    task->hdr.error_code = cpu_to_le32(task->status_code);
++    if (task->status_code != TDX_VP_GET_QUOTE_SUCCESS) {
++        error_report("TDX: GetQuote failed, status=0x%016" PRIx64,
++                     task->status_code);
++    }
+ 
+-    /* Publish the response contents before marking this request completed. */
+-    smp_wmb();
++    /* Keep IN_FLIGHT until both the quote and its length are published. */
++    task->hdr.error_code = cpu_to_le64(TDX_VP_GET_QUOTE_IN_FLIGHT);
+     ret = address_space_write(&address_space_memory, task->buf_gpa,
+                               MEMTXATTRS_UNSPECIFIED, &task->hdr,
+                               TDX_GET_QUOTE_HDR_SIZE);
++    if (ret == MEMTX_OK) {
++        smp_wmb();
++        status = cpu_to_le64(task->status_code);
++        ret = address_space_write(&address_space_memory,
++                                  task->buf_gpa +
++                                  offsetof(struct tdx_get_quote_header,
++                                           error_code),
++                                  MEMTXATTRS_UNSPECIFIED,
++                                  &status, sizeof(status));
++    }
+     if (ret != MEMTX_OK) {
+         error_report("TDX: get-quote: failed to update GetQuote header.");
+     }
+@@ -1083,7 +1104,7 @@
+         return -1;
+     }
+ 
+-    task = g_malloc(sizeof(*task));
++    task = g_new0(struct tdx_generate_quote_task, 1);
+     task->buf_gpa = buf_gpa;
+     task->payload_gpa = buf_gpa + TDX_GET_QUOTE_HDR_SIZE;
+     task->payload_len = buf_len - TDX_GET_QUOTE_HDR_SIZE;
