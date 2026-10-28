@@ -33,7 +33,6 @@
 
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.latest = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
-          packages.app = pkgs.pkgsStatic.callPackage ./app/package.nix { };
           packages.attester = pkgs.callPackage ./attester/package.nix { };
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
@@ -47,7 +46,7 @@
                 tar xf "$src" --strip-components=1 -C "$out" --wildcards '*/rust/*'
               '';
 
-          checks.attestation = pkgs.callPackage ./test/attestation.nix { };
+          checks.attestation = pkgs.testers.runNixOSTest ./test/attestation;
           checks.formal-verification =
             pkgs.runCommand "tarako-formal-verification"
               {
@@ -68,21 +67,8 @@
               "W=e"
             ];
           });
-          checks.quote-benchmark = pkgs.callPackage ./test/attestation.nix { benchmark = true; };
-          checks.quote-tools =
-            pkgs.runCommand "quote-tools-tests"
-              {
-                nativeBuildInputs = [
-                  pkgs.python3
-                  self'.packages.tdx-verify
-                ];
-                TDX_VERIFY_TESTDATA = "${self'.packages.tdx-verify.src}/testing/testdata";
-              }
-              ''
-                cp -r ${./test} test
-                python3 test/quote-tools-test.py -v
-                touch "$out"
-              '';
+          checks.quote-benchmark = pkgs.testers.runNixOSTest ./test/quote-benchmark;
+          checks.quote-tools = pkgs.callPackage ./test/quote-tools { };
 
           # Build these on any machine, then run the resulting test driver on
           # the TDX host (outside the Nix build sandbox). Pin vendor QEMU for
@@ -90,14 +76,10 @@
           packages.tdx-qemu = pkgs.callPackage ./tdx/qemu.nix { };
           packages.tdx-firmware = pkgs.callPackage ./tdx/firmware.nix { };
           packages.tdx-verify = pkgs.callPackage ./tdx/verify.nix { };
-          packages.tdx-test-driver = (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driver;
+          packages.tdx-test-driver = (pkgs.testers.runNixOSTest ./test/attestation-tdx).driver;
           packages.tdx-test-driver-interactive =
-            (pkgs.callPackage ./test/attestation.nix { tdx = true; }).driverInteractive;
-          packages.tdx-quote-benchmark-driver =
-            (pkgs.callPackage ./test/attestation.nix {
-              benchmark = true;
-              tdx = true;
-            }).driver;
+            (pkgs.testers.runNixOSTest ./test/attestation-tdx).driverInteractive;
+          packages.tdx-quote-benchmark-driver = (pkgs.testers.runNixOSTest ./test/quote-benchmark-tdx).driver;
 
           devShells = {
             # Run protocol checks without building kernel/Rust development inputs.

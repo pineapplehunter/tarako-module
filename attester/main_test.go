@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"strings"
 	"testing"
 	"unsafe"
 )
@@ -25,6 +26,23 @@ func TestRequestBindingRejectsInvalidNonce(t *testing.T) {
 	_, err := requestBinding(quoteRequest{Request: "request", Nonce: "00"})
 	if err == nil {
 		t.Fatal("short nonce was accepted")
+	}
+}
+
+func TestParseUserData(t *testing.T) {
+	for _, value := range []string{"01aBff", strings.Repeat("ff", userDataBytes)} {
+		data, err := parseUserData(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hex.EncodeToString(data) != strings.ToLower(value) {
+			t.Fatalf("parsed user data = %x, want %s", data, value)
+		}
+	}
+	for _, value := range []string{"", "0", "xx", strings.Repeat("00", userDataBytes+1)} {
+		if _, err := parseUserData(value); err == nil {
+			t.Errorf("accepted invalid user data %q", value)
+		}
 	}
 }
 

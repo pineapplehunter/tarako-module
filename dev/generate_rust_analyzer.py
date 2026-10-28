@@ -2,7 +2,7 @@
 """generate_rust_analyzer - Generates rust-project.json for the tarako kernel module.
 
 Usage (from the nix devShell):
-    python3 generate_rust_analyzer.py > rust-project.json
+    python3 dev/generate_rust_analyzer.py > rust-project.json
 """
 
 import json
@@ -23,14 +23,14 @@ if missing:
         print(m, file=sys.stderr)
     print(file=sys.stderr)
     print("Run this from the nix devShell:", file=sys.stderr)
-    print("  nix develop . --command python3 generate_rust_analyzer.py > rust-project.json", file=sys.stderr)
+    print("  nix develop . --command python3 dev/generate_rust_analyzer.py > rust-project.json", file=sys.stderr)
     sys.exit(1)
 
 SRCTREE     = pathlib.Path(os.environ["RUST_KERNEL_SRCTREE"])
 OBJTREE     = pathlib.Path(os.environ["RUST_KERNEL_OBJTREE"])
 SYSROOT     = pathlib.Path(os.environ["RUST_SYSROOT"])
 SYSROOT_SRC = pathlib.Path(os.environ["RUST_LIB_SRC"])
-EXTMOD      = pathlib.Path(__file__).resolve().parent / "driver"
+EXTMOD      = pathlib.Path(__file__).resolve().parent.parent / "driver"
 
 
 def load_cfgs() -> list[str]:

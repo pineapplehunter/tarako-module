@@ -1,7 +1,8 @@
-// tarako-attester serves nonce-bound Tarako Quotes over HTTP.
+// tarako-attester serves nonce-bound Tarako Quotes over HTTP or generates them on the CLI.
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/asn1"
 	"encoding/hex"
@@ -43,6 +44,7 @@ type quoteResponse struct {
 	PublicKey    string `json:"public_key"`
 	SignatureDER string `json:"signature_der"`
 	UserData     string `json:"user_data"`
+	signDuration time.Duration
 }
 
 type errorResponse struct {
@@ -94,7 +96,7 @@ func requestBinding(request quoteRequest) ([]byte, error) {
 	return hasher.Sum(nil), nil
 }
 
-func tarakoQuote(binding []byte) (*quoteResponse, error) {
+func tarakoQuote(userData []byte) (*quoteResponse, error) {
 	device, err := os.OpenFile("/dev/tarako", os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/tarako: %w", err)
@@ -121,8 +123,10 @@ func tarakoQuote(binding []byte) (*quoteResponse, error) {
 	}
 
 	var signingRequest signDataRequest
-	copy(signingRequest.UserData[:], binding)
+	copy(signingRequest.UserData[:], userData)
+	started := time.Now()
 	result, err = ioctl(fd, tarakoSignData, uintptr(unsafe.Pointer(&signingRequest)))
+	signDuration := time.Since(started)
 	runtime.KeepAlive(&signingRequest)
 	if err != nil {
 		return nil, fmt.Errorf("TARAKO_SIGN_DATA: %w", err)
@@ -147,7 +151,44 @@ func tarakoQuote(binding []byte) (*quoteResponse, error) {
 		PublicKey:    hex.EncodeToString(publicKey[:]),
 		SignatureDER: hex.EncodeToString(signatureDER),
 		UserData:     hex.EncodeToString(signingRequest.UserData[:]),
+		signDuration: signDuration,
 	}, nil
+}
+
+func parseUserData(value string) ([]byte, error) {
+	data, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode user data: %w", err)
+	}
+	if len(data) == 0 || len(data) > userDataBytes {
+		return nil, errors.New("user data must contain between 1 and 128 bytes")
+	}
+	return data, nil
+}
+
+func runQuote(args []string) error {
+	if len(args) > 1 {
+		return errors.New("usage: tarako-attester quote [hex-user-data]")
+	}
+	var data []byte
+	if len(args) == 0 {
+		data = make([]byte, 32)
+		if _, err := rand.Read(data); err != nil {
+			return fmt.Errorf("generate nonce: %w", err)
+		}
+	} else {
+		var err error
+		data, err = parseUserData(args[0])
+		if err != nil {
+			return err
+		}
+	}
+	quote, err := tarakoQuote(data)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sign ioctl: %.3f ms\n", float64(quote.signDuration)/float64(time.Millisecond))
+	return json.NewEncoder(os.Stdout).Encode(quote)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
@@ -185,6 +226,13 @@ func quoteHandler(writer http.ResponseWriter, request *http.Request) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "quote" {
+		if err := runQuote(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	listen := flag.String("listen", ":5000", "HTTP listen address")
 	flag.Parse()
 

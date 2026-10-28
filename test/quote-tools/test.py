@@ -6,13 +6,15 @@ import io
 import os
 from pathlib import Path
 import runpy
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 BENCH = runpy.run_path(str(ROOT / "quote-bench.py"))
 ATTEST = runpy.run_path(str(ROOT / "tdx-attest.py"))
+TARAKO = runpy.run_path(str(ROOT / "tarako-quote.py"))
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -61,6 +63,30 @@ class BenchmarkTests(unittest.TestCase):
         with patch("subprocess.run", return_value=result) as run:
             self.assertEqual(BENCH["measure"]("tdx", True), 5)
         self.assertIn("--verify-collateral", run.call_args.args[0])
+
+
+class TarakoQuoteTests(unittest.TestCase):
+    def test_uses_go_attester_quote_command(self):
+        nonce = "ab" * 32
+        response = b'sign ioctl: 0.100 ms\n{"hash":"test"}\n'
+        main = TARAKO["main"]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "quote.txt"
+            with (
+                patch.dict(main.__globals__, prepare_app=lambda: None),
+                patch("sys.argv", ["tarako-quote", nonce, "-o", str(output)]),
+                patch("subprocess.run", return_value=SimpleNamespace(
+                    stdout=response,
+                )) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                main()
+            self.assertEqual(
+                run.call_args.args[0],
+                (Path("/var/lib/tarako/tarako-attester"), "quote", nonce),
+            )
+            self.assertEqual(output.read_bytes(), response)
 
 
 class GetQuoteTests(unittest.TestCase):

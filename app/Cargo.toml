@@ -1,8 +1,0 @@
-[package]
-name = "tarako-app"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-der = { version = "0.8.0", features = ["std", "oid"] }
-libc = "0.2"
