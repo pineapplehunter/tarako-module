@@ -1,26 +1,26 @@
-# AGENTS.md — rust-kernel-module
+# TARAKO
 
-## Build & Test
+This is a codebase for a rust based linux kernel module used for remote attestation.
+See also README.md
+
+## Development
+Nix build system is used for development.
+
+User these commands for common tasks.
 
 ```sh
-nix build .#default                                     # kernel module
-nix build .#app                                         # userspace ioctl app
-nix build .#attester                                    # Go Attester webserver
-nix build .#checks.x86_64-linux.attestation             # three-node NixOS VM test
-nix build .#kernel-src                                  # minimal ~4.7 MB kernel Rust source tree
-nix develop                                             # dev shell (rust-src, rust-analyzer, python3 w/ cryptography)
-nix fmt                                                 # format using nixfmt-tree
-make -C driver                                          # build module against running kernel (outside nix)
+nix build .#default # the TARAKO kernel module
+nix build .#attester # Go Attester webserver
+nix flake check # build test packages and nixos tests
+nix fmt # format the nix files
+make -C driver # build module against running kernel (outside nix)
 ```
-
-Commands run in `nix develop` shell unless noted. The attestation test verifies ECDSA signatures via `openssl dgst -sha256 -verify`.
 
 ## Architecture
 
-- **`driver/src/`**: Rust kernel module (`miscdevice`, `/dev/tarako`). Sub-files are `include!()`'d from `lib.rs` (not separate compiled units — Kbuild only lists `src/lib.o`). Generates ECDSA P-256 key pair on load, zeroizes private key on unload. The signing ioctl is guarded: IMA must measure the generated key and the caller's exe must be fs-verity protected.
-- **`app/`**: standalone Cargo binary with `der` and `libc` crates. Uses hardcoded ioctl numbers matching the kernel module. Accepts up to 1024 bits of hex user data on the CLI; shorter values such as a nonce are zero-padded.
-- **`attester/`**: single-binary Go webserver. It receives the request and Verifier nonce from the Client/Relying Party and invokes the Tarako ioctls directly, so its own fs-verity digest is signed.
-- **`test/`**: Three-node Background-Check NixOS VM test definition (`attestation.nix`/`.py`), with a Client/Relying Party (`client.py`) and a stateful Verifier (`verifier.py`). The boot-enabled Verifier signs results with its test leaf certificate key, and the Client validates them against `root-ca.crt`. The disabled-at-boot Attester service copies and enables fs-verity on the Go binary in its service script before executing it.
+- **`driver/src/`**: Rust kernel module
+- **`attester/`**: single-binary Go attester. By default, its HTTP server receives the request and Verifier nonce from the Client/Relying Party and invokes the Tarako ioctls directly, so its own fs-verity digest is signed. `tarako-attester quote [hex-user-data]` generates a quote on the CLI and reports signing-ioctl latency; user data is limited to 128 bytes and zero-padded. Omitting user data generates a fresh random 32-byte nonce.
+- **`test/`**: Shared attester, TDX, and quote-tool configuration. Separate test definitions live in `attestation/`, `attestation-tdx/`, `quote-benchmark/`, and `quote-benchmark-tdx/`; hardware-free regression tests live in `quote-tools/`. `attestation/` contains the three-node Background-Check test, Client/Relying Party (`client.py`), stateful Verifier (`verifier.py`), and test PKI fixtures. The boot-enabled Verifier signs results with its test leaf certificate key, and the Client validates them against `root-ca.crt`. The disabled-at-boot Attester service copies and enables fs-verity on the Go binary in its service script before executing it.
 
 Ioctls:
 | Constant | Code | Direction |
@@ -33,15 +33,14 @@ The kernel computes `ECDSA-SHA256(SK, fsverity_digest || user_data)` for 128 byt
 
 ## Non-obvious dev tools
 
-- `python3 generate_rust_analyzer.py > rust-project.json` — generates IDE config for the kernel module. **Must run from `nix develop` shell** (needs `RUST_KERNEL_SRCTREE`, `RUST_KERNEL_OBJTREE`, `RUST_SYSROOT`, `RUST_LIB_SRC`).
-- `python3 analyze_pubkey.py` — debug tool that tests byte-order permutations of kernel ECC limb output against the P-256 curve.
+- `python3 dev/generate_rust_analyzer.py > rust-project.json` — generates IDE config for the kernel module. **Must run from `nix develop` shell** (needs `RUST_KERNEL_SRCTREE`, `RUST_KERNEL_OBJTREE`, `RUST_SYSROOT`, `RUST_LIB_SRC`).
 
 ## Conventions
 
 - The kernel driver uses `include!("...")` at `lib.rs:19-33` to embed sub-modules (not Cargo or `mod` in separate files). Do not add files without adding an `include!()` line in `lib.rs`.
 - `rust-project.json` is generated, not committed (in `.gitignore`).
 - `result*` symlinks from `nix build` are in `.gitignore`.
-- DER encoding for public key and signature is done in userspace (`app/`) using the `der` crate — do NOT roll your own DER parser/formatter.
+- DER encoding for signatures is done in userspace (`attester/`) using Go's `encoding/asn1` — do NOT roll your own DER parser/formatter.
 - Private key lives in a `SetOnce<KeyPair>` global (`KEY_PAIR`), populated during module init.
 
 ## References
