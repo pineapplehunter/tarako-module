@@ -45,10 +45,6 @@ in
 {
   boot.kernelPatches = [
     {
-      name = "tdx-quote-poll-5ms";
-      patch = ./tdx-quote-poll-5ms.patch;
-    }
-    {
       name = "ima-rtmr";
       patch = imaRtmrPatch;
       structuredExtraConfig = with lib.kernel; {

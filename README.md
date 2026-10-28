@@ -240,7 +240,7 @@ report_data=$(python3 -c 'import sys; print(bytes.fromhex(sys.argv[1]).ljust(64,
   -get_collateral=true -check_crl=true
 ```
 
-A latency close to 5 ms can still reflect the guest's completion-polling floor rather than the exact host signing duration; successful cryptographic verification establishes that the returned evidence is signed and bound to the requested nonce, not that generation consumed the whole measured interval.
+The guest polls quote completion once per second, so measured latency can reflect that polling interval rather than the exact host signing duration; successful cryptographic verification establishes that the returned evidence is signed and bound to the requested nonce, not that generation consumed the whole measured interval.
 
 If an older build reports `wrote 0 bytes` / `raw quote is empty`, that is a failed quote operation, not a fast valid quote. The unpatched vendor QEMU incorrectly treated EOF as success; its 32-bit status conversion could also turn the 64-bit generic error into success. The patched QEMU uses framed QGS requests, but framing alone does not establish the cause of a host failure: some Intel QGS versions also support raw TDREPORT requests. Rebuild the test driver to use the patched **host QEMU**, and unset `TARAKO_TDX_QEMU` if it points to an unpatched binary. Verification must not be bypassed.
 
