@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
-use core::ffi::{c_int, c_uint, c_ulong};
+use core::ffi::{c_char, c_int, c_uint, c_ulong};
 
 #[repr(C)]
 pub(crate) struct Point {
@@ -11,7 +11,7 @@ pub(crate) struct Point {
 
 #[repr(C)]
 pub(crate) struct Curve {
-    pub(crate) name: *const i8,
+    pub(crate) name: *const c_char,
     pub(crate) nbits: u32,
     pub(crate) g: Point,
     pub(crate) p: *mut u64,
@@ -73,8 +73,8 @@ extern "C" {
     pub(crate) fn sha256(data: *const u8, len: c_ulong, out: *mut u8);
     // Log a critical data measurement to IMA (security/integrity/ima/ima_main.c:1209)
     pub(crate) fn ima_measure_critical_data(
-        event_label: *const i8,
-        event_name: *const i8,
+        event_label: *const c_char,
+        event_name: *const c_char,
         buf: *const u8,
         buf_len: c_ulong,
         hash: bool,
