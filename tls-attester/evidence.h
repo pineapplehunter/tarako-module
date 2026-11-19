@@ -5,6 +5,9 @@
 
 struct quote_source {
     const char *url;
+#ifdef TARAKO_TEST
+    int tarako_fault, platform_fault;
+#endif
 };
 
 struct verifier {

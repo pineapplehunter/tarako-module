@@ -48,6 +48,8 @@
             ];
           } ./formal-verification/test-negative-models.py;
           packages.tls-attester = pkgs.callPackage ./tls-attester/package.nix { };
+          checks.tls-loopback = self'.packages.tls-attester;
+          checks.tls-attestation = pkgs.testers.runNixOSTest ./test/tls-attestation;
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
           packages.kernel-src =
@@ -79,7 +81,9 @@
           });
           checks.quote-benchmark = pkgs.testers.runNixOSTest ./test/quote-benchmark;
           checks.quote-tools = pkgs.callPackage ./test/quote-tools { };
+          checks.platform-evidence = pkgs.callPackage ./test/platform-evidence { };
           packages.tls-mock-services = pkgs.callPackage ./test/tls-attestation/package.nix { };
+          checks.tls-services = self'.packages.tls-mock-services;
 
           # Build these on any machine, then run the resulting test driver on
           # the TDX host (outside the Nix build sandbox). Pin vendor QEMU for

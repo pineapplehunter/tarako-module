@@ -1,5 +1,7 @@
 {
   pkgsStatic,
+  openssl,
+  binutils,
   pkg-config,
 }:
 pkgsStatic.stdenv.mkDerivation {
@@ -12,6 +14,8 @@ pkgsStatic.stdenv.mkDerivation {
     json_c
   ];
   nativeBuildInputs = [ pkg-config ];
+  nativeCheckInputs = [ openssl.bin binutils ];
   enableParallelBuilding = true;
+  doCheck = true;
   makeFlags = [ "PREFIX=${placeholder "out"}" ];
 }

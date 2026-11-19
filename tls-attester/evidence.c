@@ -164,6 +164,15 @@ int emit_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
         fprintf(stderr, "platform signer unavailable or rejected request\n");
         goto done;
     }
+#ifdef TARAKO_TEST
+    if (source->tarako_fault)
+        memset(quote.sig_s, 0, sizeof(quote.sig_s));
+    if (source->platform_fault) {
+        const uint8_t invalid = 0;
+        if (!add_hex(mock, "signature", &invalid, 1))
+            goto done;
+    }
+#endif
     if (!add_hex(tarako, "hash", quote.hash, sizeof(quote.hash)) ||
         !add_hex(tarako, "pubkey", quote.pubkey, sizeof(quote.pubkey)) ||
         !add_hex(tarako, "sig_r", quote.sig_r, sizeof(quote.sig_r)) ||

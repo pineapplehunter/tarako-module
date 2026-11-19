@@ -98,11 +98,25 @@ static int serve_request(SSL *ssl)
 
 static int run(int argc, char **argv)
 {
+#ifdef TARAKO_TEST
+    if (argc != 6) {
+        fprintf(stderr, "usage: %s listen:port cert.pem key.pem signer-url {valid|tarako|platform|both}\n", argv[0]);
+        return 0;
+    }
+#else
     if (argc != 5) {
         fprintf(stderr, "usage: %s listen:port cert.pem key.pem signer-url\n", argv[0]);
         return 0;
     }
+#endif
     struct quote_source source = {.url = argv[4]};
+#ifdef TARAKO_TEST
+    if (strcmp(argv[5], "valid") != 0 && strcmp(argv[5], "tarako") != 0 &&
+        strcmp(argv[5], "platform") != 0 && strcmp(argv[5], "both") != 0)
+        return 0;
+    source.tarako_fault = strcmp(argv[5], "tarako") == 0 || strcmp(argv[5], "both") == 0;
+    source.platform_fault = strcmp(argv[5], "platform") == 0 || strcmp(argv[5], "both") == 0;
+#endif
     const struct attestation_callbacks callbacks = {.emit = emit_evidence, .arg = &source};
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     BIO *listener = BIO_new_accept(argv[1]);

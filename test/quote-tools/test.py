@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(os.environ.get("TARAKO_QUOTE_SOURCES", Path(__file__).resolve().parent.parent))
 BENCH = runpy.run_path(str(ROOT / "quote-bench.py"))
 ATTEST = runpy.run_path(str(ROOT / "tdx-attest.py"))
 TARAKO = runpy.run_path(str(ROOT / "tarako-quote.py"))

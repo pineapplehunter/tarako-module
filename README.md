@@ -17,6 +17,8 @@ TARAKO allows an external client to verify the integrity of a userspace applicat
 
 It is intended to be used in combination with remote attestation of the confidential VM itself.
 
+The separate [early TLS attestation PoC](tls-attester/README.md) binds a TARAKO quote and mock platform evidence to a TLS 1.3 handshake.
+
 ## Required facilities
 
 This module requires a kernel with the following features enabled:
