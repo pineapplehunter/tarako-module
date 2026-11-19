@@ -39,13 +39,16 @@ TDX guest. Only the client fetches its plain HTTP IMA log.
 
 ## TDX guest
 
-Use a measured guest kernel with TARAKO, the SHA-384 IMA bank and the pinned
-IMA-to-RTMR2 extender (see `kernel/ima-rtmr-kernel.nix`). Ensure the extender is
-active **before** TARAKO records its key. The build and boot you approve must
-protect the TARAKO signer and enable the intended measurement policy. A fresh
-Intel quote is required on each handshake: mount configfs, ensure the TDX
-guest driver is active, and provision your TDX host's working quote/QGS path. The guest attester uses
-`/sys/kernel/config/tsm/report`, not a network mock signer or a local TDREPORT.
+Use a measured guest kernel with TARAKO and the pinned IMA-to-RTMR2 extender
+(see `kernel/ima-rtmr-kernel.nix`). Boot with `ima_hash=sha384` and ensure the
+kernel exports `/sys/kernel/security/ima/ascii_runtime_measurements_sha384`
+even when the guest has no TPM. Ensure the extender is active **before**
+TARAKO records its key. The build and boot you approve must protect the TARAKO
+signer and enable the intended measurement policy. A fresh Intel quote is
+required on each handshake: mount configfs, ensure the TDX guest driver is
+active, and provision your TDX host's working quote/QGS path. The guest attester
+uses `/sys/kernel/config/tsm/report`, not a network mock signer or a local
+TDREPORT.
 
 Copy the packaged `tarako-tdx-attester` to an fs-verity-capable filesystem,
 enable fs-verity on that copy, and run that exact copy with access to

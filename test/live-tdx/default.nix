@@ -119,9 +119,13 @@ in
         if status != 0:
             print(attester.succeed("dmesg | grep -Ei 'ima_rtmr|tdx_guest|ima:' || true"))
             raise AssertionError("built-in IMA-to-RTMR extender is not active")
-        attester.succeed("modprobe tarako && test -c /dev/tarako")
         log = "/sys/kernel/security/ima/ascii_runtime_measurements_sha384"
-        attester.wait_until_succeeds(f"grep -q 'ima-buf .* public-key-generate ' {log}", timeout=timeout)
+        status, _ = attester.execute(f"test -r {log}")
+        if status != 0:
+            print(attester.succeed("ls -l /sys/kernel/security/ima/; cat /proc/cmdline"))
+            raise AssertionError("guest kernel did not export the SHA-384 IMA measurement log")
+        attester.succeed("modprobe tarako && test -c /dev/tarako")
+        attester.succeed(f"grep -q 'ima-buf .* public-key-generate ' {log}")
         # An independent verity filesystem avoids changing the root or rebooting the TD.
         attester.succeed(f"install -d -m 0700 {state}; mkdir -p {measured}")
         attester.succeed(f"truncate -s 128M {state}/verity.img; mkfs.ext4 -q -F -O verity {state}/verity.img")

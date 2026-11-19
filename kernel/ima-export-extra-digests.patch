@@ -1,0 +1,21 @@
+--- a/security/integrity/ima/ima_fs.c
++++ b/security/integrity/ima/ima_fs.c
+@@ -635,16 +635,14 @@ static int __init create_securityfs_measurement_lists(bool staging)
+ 	const struct file_operations *binary_ops = &ima_measurements_ops;
+ 	umode_t permissions = (S_IRUSR | S_IRGRP | S_IWUSR | S_IWGRP);
+ 	const char *file_suffix = "";
+-	int count = NR_BANKS(ima_tpm_chip);
++	/* Include the configured IMA hash even without a matching TPM bank. */
++	int count = NR_BANKS(ima_tpm_chip) + ima_extra_slots;
+ 
+ 	if (staging) {
+ 		ascii_ops = &ima_ascii_measurements_staged_ops;
+ 		binary_ops = &ima_measurements_staged_ops;
+ 		file_suffix = "_staged";
+ 	}
+-
+-	if (ima_sha1_idx >= NR_BANKS(ima_tpm_chip))
+-		count++;
+ 
+ 	for (int i = 0; i < count; i++) {
+ 		u16 algo = ima_algo_array[i].algo;

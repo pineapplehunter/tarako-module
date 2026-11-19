@@ -43,7 +43,7 @@ let
         diff -u /dev/null "$work/$out_dir/$name" \
           | sed "s|$work/|b/|" >> "$out" || true
       done
-      cat ${./ima-rtmr-early-sysfs.patch} >> "$out"
+      cat ${./ima-rtmr-early-sysfs.patch} ${./ima-export-extra-digests.patch} >> "$out"
 
       runHook postInstall
     '';
