@@ -6,8 +6,12 @@
 #include <stdint.h>
 
 #define BINDING_SIZE 32
-#define CMW_LIMIT 8192
+#define CMW_LIMIT 49152
+#ifdef TARAKO_TDX
+#define EVIDENCE_TYPE "application/vnd.tarako.tdx-evidence+json"
+#else
 #define EVIDENCE_TYPE "application/vnd.tarako.tls-evidence+json"
+#endif
 
 /* Return 1 on success, 0 on failure. Buffers and keys are borrowed. */
 struct attestation_callbacks {

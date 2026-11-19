@@ -7,6 +7,7 @@
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <time.h>
@@ -25,14 +26,14 @@ static const uint8_t result_domain[] = "TARAKO-TLS-RESULT-V1";
 typedef struct json_object json;
 
 struct response {
-    char buf[16384];
-    size_t len;
+    char *buf;
+    size_t len, capacity;
 };
 
 static size_t receive_body(char *data, size_t size, size_t count, void *arg)
 {
     struct response *r = arg;
-    if (size && count > (sizeof(r->buf) - r->len) / size)
+    if (size && count > (r->capacity - r->len) / size)
         return 0;
     const size_t n = size * count;
     memcpy(r->buf + r->len, data, n);
@@ -40,9 +41,10 @@ static size_t receive_body(char *data, size_t size, size_t count, void *arg)
     return n;
 }
 
-static json *post(const char *url, json *request, long *status)
+static json *post(const char *url, json *request, long *status, long timeout_ms)
 {
-    struct response r = {0};
+    char buf[16384];
+    struct response r = {.buf = buf, .capacity = sizeof(buf)};
     CURL *curl = curl_easy_init();
     struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
     struct json_tokener *parser = json_tokener_new_ex(8);
@@ -56,7 +58,7 @@ static json *post(const char *url, json *request, long *status)
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_0);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_object_to_json_string_ext(request, JSON_C_TO_STRING_PLAIN));
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 4000L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, receive_body);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r);
@@ -81,14 +83,17 @@ done:
 static int add_hex(json *obj, const char *name, const uint8_t *bytes, size_t len)
 {
     static const char alphabet[] = "0123456789abcdef";
-    char hex[2 * 64];
-    if (len > 64)
+    if (len > TDX_QUOTE_LIMIT)
+        return 0;
+    char *hex = malloc(2 * len);
+    if (!hex)
         return 0;
     for (size_t i = 0; i < len; i++) {
         hex[i * 2] = alphabet[bytes[i] >> 4];
         hex[i * 2 + 1] = alphabet[bytes[i] & 15];
     }
     json *value = json_object_new_string_len(hex, (int)(len * 2));
+    free(hex);
     if (!value)
         return 0;
     if (!json_object_object_add(obj, name, value))
@@ -141,7 +146,11 @@ static int encode_cmw(json *evidence, char *cmw, size_t *length)
 int emit_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
                   char *cmw, size_t *length)
 {
+#ifdef TARAKO_TDX
+    (void)arg;
+#else
     const struct quote_source *source = arg;
+#endif
     struct tarako_quote quote = {0};
     if (!tarako_sign(&quote, binder, spki))
         return 0;
@@ -153,13 +162,25 @@ int emit_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
     if (!SHA256(input, sizeof(input), report))
         return 0;
 
-    json *request = json_object_new_object(), *mock = NULL;
     json *tarako = json_object_new_object(), *evidence = json_object_new_object();
-    long status;
     int ok = 0;
-    if (!request || !tarako || !evidence || !add_hex(request, "report_data", report, sizeof(report)))
+#ifdef TARAKO_TDX
+    uint8_t raw_quote[TDX_QUOTE_LIMIT];
+    size_t raw_length = sizeof(raw_quote);
+#else
+    json *request = json_object_new_object(), *mock = NULL;
+    long status;
+#endif
+    if (!tarako || !evidence)
         goto done;
-    mock = post(source->url, request, &status);
+#ifdef TARAKO_TDX
+    if (!tdx_quote(raw_quote, &raw_length, report) ||
+        !add_hex(evidence, "tdx_quote", raw_quote, raw_length))
+        goto done;
+#else
+    if (!request || !add_hex(request, "report_data", report, sizeof(report)))
+        goto done;
+    mock = post(source->url, request, &status, 4000L);
     if (status != 200 || !mock) {
         fprintf(stderr, "platform signer unavailable or rejected request\n");
         goto done;
@@ -173,6 +194,10 @@ int emit_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
             goto done;
     }
 #endif
+    if (json_object_object_add(evidence, "platform", mock))
+        goto done;
+    mock = NULL;
+#endif
     if (!add_hex(tarako, "hash", quote.hash, sizeof(quote.hash)) ||
         !add_hex(tarako, "pubkey", quote.pubkey, sizeof(quote.pubkey)) ||
         !add_hex(tarako, "sig_r", quote.sig_r, sizeof(quote.sig_r)) ||
@@ -181,15 +206,14 @@ int emit_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
     if (json_object_object_add(evidence, "tarako", tarako))
         goto done;
     tarako = NULL;
-    if (json_object_object_add(evidence, "platform", mock))
-        goto done;
-    mock = NULL;
     ok = encode_cmw(evidence, cmw, length);
 done:
     json_object_put(evidence);
     json_object_put(tarako);
+#ifndef TARAKO_TDX
     json_object_put(mock);
     json_object_put(request);
+#endif
     return ok;
 }
 
@@ -232,6 +256,46 @@ static int verify_result(const struct verifier *verifier, json *reply,
     return ok;
 }
 
+#ifdef TARAKO_TDX
+static long long now_ms(void)
+{
+    struct timespec t;
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0)
+        return -1;
+    return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static int attach_ima(json *request, const char *url, long timeout_ms)
+{
+    struct response r = {.buf = malloc(IMA_LOG_LIMIT), .capacity = IMA_LOG_LIMIT};
+    CURL *curl = curl_easy_init();
+    int ok = 0;
+    if (!r.buf || !curl)
+        goto done;
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http");
+    curl_easy_setopt(curl, CURLOPT_PROXY, "");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, receive_body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r);
+    long status = 0;
+    if (curl_easy_perform(curl) != CURLE_OK ||
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK ||
+        status != 200 || !r.len || memchr(r.buf, 0, r.len))
+        goto done;
+    json *log = json_object_new_string_len(r.buf, (int)r.len);
+    if (log && !json_object_object_add(request, "ima_log", log))
+        ok = 1;
+    else
+        json_object_put(log);
+done:
+    curl_easy_cleanup(curl);
+    free(r.buf);
+    return ok;
+}
+#endif
+
 int appraise_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
                       const char *cmw, size_t length)
 {
@@ -249,7 +313,43 @@ int appraise_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
         json_object_put(value);
         goto done;
     }
-    reply = post(verifier->url, request, &status);
+#ifdef TARAKO_TDX
+    const long long start = now_ms();
+    if (start < 0)
+        goto done;
+    const long long deadline = start + 20000;
+    for (unsigned int attempt = 0; attempt < 3; attempt++) {
+        long long remaining = deadline - now_ms();
+        if (remaining <= 0 || remaining > 20000)
+            break;
+        if (verifier->verbose)
+            fprintf(stderr, "* Fetching IMA log (attempt %u)\n", attempt + 1);
+        if (!attach_ima(request, verifier->ima_url, remaining < 4000 ? (long)remaining : 4000)) {
+            fputs("IMA log unavailable, invalid, or exceeds size limit\n", stderr);
+            goto done;
+        }
+        remaining = deadline - now_ms();
+        if (remaining <= 0 || remaining > 20000)
+            break;
+        if (verifier->verbose)
+            fputs("* Submitting TDX quote, IMA log and TARAKO evidence\n", stderr);
+        reply = post(verifier->url, request, &status, (long)remaining);
+        json *error;
+        if (attempt == 2 || status != 400 || !reply ||
+            !json_object_object_get_ex(reply, "error", &error) ||
+            !json_object_is_type(error, json_type_string) ||
+            strcmp(json_object_get_string(error), "ima_replay"))
+            break;
+        if (verifier->verbose)
+            fputs("* IMA replay mismatch; refetching log\n", stderr);
+        struct timespec pause = {.tv_nsec = 100000000};
+        nanosleep(&pause, NULL);
+        json_object_put(reply);
+        reply = NULL;
+    }
+#else
+    reply = post(verifier->url, request, &status, 4000L);
+#endif
     if (!reply) {
         fprintf(stderr, "verifier unavailable or invalid reply\n");
     } else if (status != 200) {
@@ -259,6 +359,10 @@ int appraise_evidence(void *arg, const uint8_t *binder, const uint8_t *spki,
         fprintf(stderr, "verifier rejected: %s\n", reason);
     } else if (!(ok = verify_result(verifier, reply, binder, spki, cmw, length))) {
         fprintf(stderr, "invalid or expired verifier result\n");
+#ifdef TARAKO_TDX
+    } else if (verifier->verbose) {
+        fputs("* Verifier accepted TDX collateral, IMA replay and TARAKO binding\n", stderr);
+#endif
     }
 done:
     json_object_put(reply);

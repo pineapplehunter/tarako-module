@@ -45,7 +45,6 @@
         ./quote-tools.nix
       ];
 
-      boot.kernelModules = [ "tdx_guest" ];
       environment.systemPackages = [
         bench-tdx-quote
         tdx-attest

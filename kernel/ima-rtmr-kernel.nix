@@ -34,6 +34,12 @@ let
         name="$(basename "$file")"
         mkdir -p "$work/$out_dir"
         cp "$file" "$work/$out_dir/$name"
+        if [ "$name" = main.c ]; then
+          # IMA populates its digest banks at late_initcall. The built-in
+          # TDX guest driver registers the RTMR sysfs device earlier.
+          substituteInPlace "$work/$out_dir/$name" \
+            --replace-fail 'module_init(ima_rtmr_init);' 'late_initcall_sync(ima_rtmr_init);'
+        fi
         diff -u /dev/null "$work/$out_dir/$name" \
           | sed "s|$work/|b/|" >> "$out" || true
       done
@@ -62,7 +68,7 @@ in
         INTEL_TDX_GUEST = yes;
         KPROBES = yes;
         KRETPROBES = yes;
-        TDX_GUEST_DRIVER = module;
+        TDX_GUEST_DRIVER = lib.mkForce yes;
       };
     }
   ];

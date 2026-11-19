@@ -39,6 +39,9 @@ prove that the TLS private key is protected by the guest. Real signed TDX
 fixture verification and IMA-to-RTMR replay are separate checks; the IMA logs
 are synthetic and do not match the upstream signed quote.
 
+For real quote generation and cross-machine appraisal, see the separate
+[split-host live TDX suite](../live-tdx/README.md).
+
 ## Build and test
 
 Nix delegates compilation, checks, and installation to `tls-attester/Makefile`.

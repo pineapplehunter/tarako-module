@@ -11,3 +11,6 @@
 | `platform-evidence/` | Hardware-free checks for signed Intel TDX quotes and IMA-to-RTMR replay. |
 
 Shared VM configuration and quote utilities live directly in this directory.
+
+The [live TDX suite](../live-tdx/README.md) can run from a TDX host with
+`live-tdx-test-driver`, or connect to an operator-managed guest and verifier VM.

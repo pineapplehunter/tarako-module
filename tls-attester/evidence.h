@@ -13,8 +13,16 @@ struct quote_source {
 struct verifier {
     const char *url;
     EVP_PKEY *public_key;
+#ifdef TARAKO_TDX
+    const char *ima_url;
+    int verbose;
+#endif
 };
 
+#define TDX_QUOTE_LIMIT 16384
+#define IMA_LOG_LIMIT (4 * 1024 * 1024)
+
+int tdx_quote(uint8_t *output, size_t *size, const uint8_t report[64]);
 int emit_evidence(void *, const uint8_t *, const uint8_t *, char *, size_t *);
 int appraise_evidence(void *, const uint8_t *, const uint8_t *, const char *, size_t);
 #endif

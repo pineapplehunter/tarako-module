@@ -9,12 +9,48 @@
   };
 
   outputs =
-    { flake-parts, ... }@inputs:
+    { self, flake-parts, ... }@inputs:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "aarch64-linux"
         "x86_64-linux"
       ];
+
+      imports = [
+        {
+          perSystem =
+            {
+              lib,
+              pkgs,
+              self',
+              system,
+              ...
+            }:
+            lib.mkIf (system == "x86_64-linux") {
+              packages.dcap-verify = pkgs.callPackage ./live-tdx/dcap/package.nix { };
+              packages.live-tdx-verifier = pkgs.callPackage ./live-tdx/verifier/package.nix {
+                dcapVerifier = self'.packages.dcap-verify;
+              };
+              checks.live-tdx-verifier = self'.packages.live-tdx-verifier;
+              packages.live-tdx-test-driver = (pkgs.testers.runNixOSTest ./test/live-tdx).driver;
+            };
+        }
+      ];
+
+      flake.nixosModules = {
+        tarakoTdxVerifier = { lib, pkgs, ... }: {
+          imports = [ ./live-tdx/module.nix ];
+          services.tarakoTdxVerifier.package =
+            lib.mkDefault
+              self.packages.${pkgs.stdenv.hostPlatform.system}.live-tdx-verifier;
+        };
+        tarakoTdxImaLog = { lib, pkgs, ... }: {
+          imports = [ ./live-tdx/guest-module.nix ];
+          services.tarakoTdxImaLog.package =
+            lib.mkDefault
+              self.packages.${pkgs.stdenv.hostPlatform.system}.live-tdx-ima-log;
+        };
+      };
 
       perSystem =
         {
@@ -38,16 +74,45 @@
             doCheck = false; # Keep the existing generator's formatting.
           } ./dev/generate_rust_analyzer.py;
           packages.generate-platform-fixtures = pkgs.writers.writePython3Bin "generate-platform-fixtures" {
-            makeWrapperArgs = [ "--prefix" "PATH" ":" (pkgs.lib.makeBinPath [ pkgs.openssl ]) ];
+            makeWrapperArgs = [
+              "--prefix"
+              "PATH"
+              ":"
+              (pkgs.lib.makeBinPath [ pkgs.openssl ])
+            ];
           } ./test/platform-evidence/generate-fixtures.py;
           packages.verify-model = pkgs.writers.writePython3Bin "tarako-verify-model" {
             doCheck = false; # The check runs the model and every negative case.
             makeWrapperArgs = [
-              "--set-default" "TARAKO_MODEL" "${./formal-verification/tarako-attestation.pv}"
-              "--prefix" "PATH" ":" (pkgs.lib.makeBinPath [ pkgs.proverif ])
+              "--set-default"
+              "TARAKO_MODEL"
+              "${./formal-verification/tarako-attestation.pv}"
+              "--prefix"
+              "PATH"
+              ":"
+              (pkgs.lib.makeBinPath [ pkgs.proverif ])
             ];
           } ./formal-verification/test-negative-models.py;
           packages.tls-attester = pkgs.callPackage ./tls-attester/package.nix { };
+          packages.live-tdx-ima-log =
+            pkgs.writers.writePython3Bin "tarako-tdx-ima-log" { }
+              ./live-tdx/serve-ima.py;
+          packages.live-tdx-candidate-policy = pkgs.writers.writePython3Bin "tarako-tdx-candidate-policy" {
+            makeWrapperArgs = [
+              "--prefix"
+              "PATH"
+              ":"
+              (pkgs.lib.makeBinPath [ pkgs.fsverity-utils ])
+            ];
+          } ./live-tdx/candidate-policy.py;
+          packages.live-tdx-smoke = pkgs.writers.writePython3Bin "tarako-tdx-smoke" {
+            makeWrapperArgs = [
+              "--prefix"
+              "PATH"
+              ":"
+              (pkgs.lib.makeBinPath [ self'.packages.tls-attester ])
+            ];
+          } ./live-tdx/smoke.py;
           checks.tls-loopback = self'.packages.tls-attester;
           checks.tls-attestation = pkgs.testers.runNixOSTest ./test/tls-attestation;
 

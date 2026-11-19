@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tarako-tdx-verifier"
+version = "0.1.0"
+dependencies = ["cryptography"]
+
+[project.scripts]
+tarako-tdx-verifier = "tarako_tdx_verifier:main"
+
+[tool.setuptools]
+py-modules = ["tarako_tdx_verifier"]

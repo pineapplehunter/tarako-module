@@ -5,8 +5,9 @@ OPENSSL ?= openssl
 READELF ?= readelf
 PREFIX ?= /usr/local
 
-BINS := tarako-tls-attester tarako-tls-attester-test tarako-tls-client
-ENDPOINT_SRC := early_tls.c evidence.c main.c
+BINS := tarako-tls-attester tarako-tls-attester-test tarako-tls-client \
+	tarako-tdx-attester tarako-tdx-client
+ENDPOINT_SRC := early_tls.c evidence.c main.c tdx_quote.c
 ENDPOINT_HEADERS := early_tls.h evidence.h
 WARNINGS := -std=c11 -Wall -Wextra -Werror
 ENDPOINT_CFLAGS = $(shell $(PKG_CONFIG) --cflags libcurl json-c openssl)
@@ -18,23 +19,28 @@ all: $(BINS)
 
 tarako-tls-attester-test: CPPFLAGS += -DTARAKO_TEST
 tarako-tls-client: CPPFLAGS += -DTARAKO_CLIENT
+tarako-tdx-attester: CPPFLAGS += -DTARAKO_TDX
+tarako-tdx-client: CPPFLAGS += -DTARAKO_TDX -DTARAKO_CLIENT
 $(BINS): $(ENDPOINT_SRC) $(ENDPOINT_HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(ENDPOINT_CFLAGS) $(LDFLAGS) -static \
 		$(ENDPOINT_SRC) $(ENDPOINT_LIBS) $(LDLIBS) -pthread -o $@
 
-loopback: early_tls.c loopback.c early_tls.h
+loopback-tdx: CPPFLAGS += -DTARAKO_TDX
+loopback loopback-tdx: early_tls.c loopback.c early_tls.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(shell $(PKG_CONFIG) --cflags openssl) \
 		$(LDFLAGS) -static early_tls.c loopback.c \
 		$(shell $(PKG_CONFIG) --static --libs openssl) $(LDLIBS) -pthread -o $@
 
-check: all loopback
+check: all loopback loopback-tdx
 	@set -eu; \
 	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	$(OPENSSL) req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \
 		-subj /CN=localhost -addext subjectAltName=DNS:localhost \
 		-keyout "$$tmp/key.pem" -out "$$tmp/cert.pem" -days 1; \
-	OPENSSL_CONF=/dev/null OPENSSL_MODULES=/nonexistent ./loopback "$$tmp/cert.pem" "$$tmp/key.pem"; \
-	for binary in $(BINS) loopback; do \
+	for test in loopback loopback-tdx; do \
+		OPENSSL_CONF=/dev/null OPENSSL_MODULES=/nonexistent ./$$test "$$tmp/cert.pem" "$$tmp/key.pem"; \
+	done; \
+	for binary in $(BINS) loopback loopback-tdx; do \
 		$(READELF) -lW "$$binary" > "$$tmp/headers"; \
 		if grep -E 'INTERP|DYNAMIC' "$$tmp/headers"; then \
 			echo "$$binary is not statically linked" >&2; exit 1; \
@@ -46,4 +52,4 @@ install: all
 	install -m755 $(BINS) "$(DESTDIR)$(PREFIX)/bin/"
 
 clean:
-	rm -f $(BINS) loopback
+	rm -f $(BINS) loopback loopback-tdx
