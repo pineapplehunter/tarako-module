@@ -51,40 +51,68 @@ static uint32_t le32(const uint8_t *p)
     return le16(p) | ((uint32_t)le16(p + 2) << 16);
 }
 
-/* Intel quote wire format: 48-byte header, optional v5 type/size,
- * report body, then a 32-bit length and exactly that many signature bytes.
- * DCAP validates the signature section and the nested certification data.
+/* Locate the report and the exact quote span. DCAP validates the signature
+ * section and its nested certification data. Never pass container padding
+ * to DCAP or treat it as authenticated quote data.
  */
-static const uint8_t *td_body(const uint8_t *q, size_t len)
+static const char *td_quote_span(const uint8_t *q, size_t *len,
+                                 const uint8_t **body)
 {
     size_t offset = 48, body_size = 584;
-    if (len < offset || le32(q + 4) != 0x81 || le16(q + 2) != 2)
-        return NULL; /* TDX, ECDSA P-256 only */
+    if (*len < offset)
+        return "truncated quote header";
+    if (le32(q + 4) != 0x81 || le16(q + 2) != 2)
+        return "expected a TDX quote with an ECDSA P-256 key";
 
     switch (le16(q)) {
     case 4:
         break;
     case 5:
         offset += 6;
-        if (len < offset)
-            return NULL;
+        if (*len < offset)
+            return "truncated v5 body descriptor";
         switch (le16(q + 48)) {
         case 2: body_size = 584; break; /* TDX 1.0 */
         case 3: body_size = 648; break; /* TDX 1.5 */
         case 4: body_size = 885; break; /* TDX 1.5 extended */
-        default: return NULL;
+        default: return "unsupported v5 body type";
         }
         if (le32(q + 50) != body_size)
-            return NULL;
+            return "incorrect v5 body size";
         break;
     default:
-        return NULL;
+        return "unsupported quote version";
     }
 
-    size_t end = offset + body_size;
-    if (len <= end + 4 || le32(q + end) != len - end - 4)
-        return NULL;
-    return q + offset;
+    size_t sig_offset = offset + body_size + 4;
+    if (*len < sig_offset)
+        return "truncated report body or signature length";
+    uint32_t sig_size = le32(q + sig_offset - 4);
+    if (sig_size == 0 || sig_size > *len - sig_offset)
+        return "empty or truncated signature section";
+    size_t end = sig_offset + sig_size;
+    for (size_t i = end; i < *len; i++)
+        if (q[i] != 0)
+            return "nonzero data after signature section";
+
+    *len = end;
+    *body = q + offset;
+    return NULL;
+}
+
+static int reject_format(const uint8_t *q, size_t len, const char *reason)
+{
+    fprintf(stderr, "tarako-dcap-verify: %s (length=%zu", reason, len);
+    if (len >= 8) {
+        unsigned version = le16(q);
+        fprintf(stderr, ", version=%u, key_type=%u, tee_type=0x%x",
+                version, (unsigned)le16(q + 2), (unsigned)le32(q + 4));
+        if (version == 5 && len >= 54)
+            fprintf(stderr, ", body_type=%u, body_size=%u",
+                    (unsigned)le16(q + 48), (unsigned)le32(q + 50));
+    }
+    fputs(")\n", stderr);
+    return INPUT;
 }
 
 static void print_hex(const uint8_t *p, size_t len)
@@ -106,9 +134,10 @@ int main(int argc, char **argv)
     size_t len = fread(quote, 1, sizeof(quote), stdin);
     if (ferror(stdin) || !feof(stdin) || len == sizeof(quote))
         return fail(INPUT, "cannot read quote or quote exceeds 64 KiB");
-    const uint8_t *body = td_body(quote, len);
-    if (body == NULL)
-        return fail(INPUT, "malformed or unsupported TDX quote");
+    const uint8_t *body;
+    const char *format_error = td_quote_span(quote, &len, &body);
+    if (format_error)
+        return reject_format(quote, len, format_error);
 
     time_t now = time(NULL);
     if (now <= 0)
@@ -132,7 +161,18 @@ int main(int argc, char **argv)
                 (unsigned)status);
         return collateral_error(status) ? COLLATERAL : VERIFY;
     }
-    if (expired != 0 || result != SGX_QL_QV_RESULT_OK) {
+    int acceptable = result == SGX_QL_QV_RESULT_OK;
+#ifdef TARAKO_DCAP_TEST_OVERRIDE
+    /* TODO: Remove this lab-only exception once the TDX host returns QVL OK.
+     * A run with this exception is not a strict TCB attestation pass.
+     */
+    if (expired == 0 && result == SGX_QL_QV_RESULT_OUT_OF_DATE) {
+        fputs("tarako-dcap-verify: TEST ONLY: allowing OUT_OF_DATE TCB; "
+              "rerun the strict driver after updating the host\n", stderr);
+        acceptable = 1;
+    }
+#endif
+    if (expired != 0 || !acceptable) {
         fprintf(stderr, "tarako-dcap-verify: collateral status %u, QV result 0x%x\n",
                 (unsigned)expired, (unsigned)result);
         return expired != 0 ? COLLATERAL : POLICY;

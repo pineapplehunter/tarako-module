@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import sys
 
 MEASUREMENTS = Path("/sys/class/misc/tdx_guest/measurements")
 EXTENDER = Path("/sys/kernel/ima_rtmr")
@@ -46,8 +45,6 @@ def main():
     except (OSError, ValueError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired) as error:
         parser.exit(1, f"cannot collect candidate policy: {error}\n")
-    print("Candidate only: review out of band before installing.",
-          file=sys.stderr)
     print(json.dumps(policy, indent=2))
 
 

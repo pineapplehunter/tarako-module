@@ -30,12 +30,116 @@ uses Intel PCS by default; set `TARAKO_TDX_QCNL_CONFIG` to the absolute path of
 an operator-supplied QCNL JSON file to use a different collateral source.
 The existing `TARAKO_TDX_QEMU` and `TARAKO_TDX_FIRMWARE` overrides also apply.
 
+To exercise the rest of the pipeline on a lab host rated `OUT_OF_DATE` by
+Intel DCAP, explicitly select the lab-only driver:
+
+```sh
+TARAKO_TDX_POLICY=./reviewed.json nix run .#live-tdx-test-driver-lab-allow-out-of-date
+```
+
+This accepts only that non-OK result and still requires unexpired collateral,
+successful DCAP verification, and all remaining checks. No environment
+variable enables this exception in the normal verifier or test driver.
+
+**Restore strict checking after testing.** After updating the TDX host, rerun
+with `live-tdx-test-driver` (no lab suffix). Do not count a lab run as a strict
+TCB pass.
+
+## Boot only the attester for external testing
+
+This two-machine setup runs just the attester VM on the TDX host and runs
+both the verifier and the client on a separate x86-64 Linux machine. Use the
+same TARAKO checkout on both machines. The client machine needs Nix, OpenSSL,
+SSH access to the TDX host, and HTTPS access to Intel PCS.
+
+### Attester side (TDX host)
+
+1. From the TARAKO checkout, choose the DNS name for the attester's HTTPS
+   certificate. It can match the physical host's hostname or be different;
+   it does not rename the host or need to resolve over DNS in this setup.
+
+   ```sh
+   out=$(mktemp -d /tmp/tarako-attester.XXXXXX)
+   printf 'Attester output directory: %s\n' "$out"
+   TARAKO_TDX_TLS_NAME=tdxbox.example.net \
+     nix run .#live-tdx-attester-driver -- --output_directory "$out"
+   ```
+
+2. Leave the driver running after it prints `Attester ready`. It exports
+   `https-ca.pem`, `candidate.json`, and `tls-name` to the printed directory.
+   It stops on Ctrl-C, guest shutdown, or the one-hour test timeout.
+
+### Client side (includes the verifier)
+
+1. In a terminal in the TARAKO checkout, set the **SSH destination** for your
+   physical TDX host and the output directory printed above. Copy the three
+   files into a fresh directory **outside the checkout**:
+
+   ```sh
+   TDX_HOST=alice@tdxbox.example.net
+   ATTESTER_OUT=/tmp/tarako-attester.REPLACE_ME
+   lab=$(mktemp -d /tmp/tarako-client.XXXXXX)
+   printf 'Client work directory: %s\n' "$lab"
+   scp "$TDX_HOST:$ATTESTER_OUT/https-ca.pem" \
+       "$TDX_HOST:$ATTESTER_OUT/candidate.json" \
+       "$TDX_HOST:$ATTESTER_OUT/tls-name" "$lab/"
+   ```
+
+2. Review the candidate against the guest build and boot you intend to trust.
+   If approved, copy it to `reviewed.json`. Generate a separate verifier
+   signing key here; **do not put it in the checkout or Nix store**:
+
+   ```sh
+   cp "$lab/candidate.json" "$lab/reviewed.json"
+   (umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+     -out "$lab/verifier.key")
+   openssl pkey -in "$lab/verifier.key" -pubout -out "$lab/verifier.pub"
+   ```
+
+3. In the same terminal, configure Intel PCS and start the verifier on
+   loopback. Use the explicitly named lab package only while the host reports
+   `OUT_OF_DATE`:
+
+   ```sh
+   QCNL_CONF_PATH="$PWD/live-tdx/intel-pcs.json" \
+     nix run .#live-tdx-verifier-lab-allow-out-of-date -- \
+       --listen 127.0.0.1 --port 5102 \
+       --policy "$lab/reviewed.json" --signing-key "$lab/verifier.key"
+   ```
+
+   Leave it running. **After updating the TDX host, use `live-tdx-verifier`
+   instead to restore strict checking.** If you use a PCCS, use your own QCNL
+   config with TLS validation enabled.
+
+4. In a second terminal on the client machine, open the tunnel to the TDX
+   host. No SSH to the guest or to a separate verifier VM is needed:
+
+   ```sh
+   TDX_HOST=alice@tdxbox.example.net
+   ssh -N -o ExitOnForwardFailure=yes \
+     -L 127.0.0.1:8443:127.0.0.1:8443 -L 127.0.0.1:8080:127.0.0.1:8080 \
+     "$TDX_HOST"
+   ```
+
+5. In a third terminal in the TARAKO checkout, use the printed client work
+   directory. The client connects through loopback but still checks the
+   configured DNS name in the attester certificate:
+
+   ```sh
+   lab=/tmp/tarako-client.REPLACE_ME
+   nix shell .#tls-attester --command tarako-tdx-client -v \
+     --ca "$lab/https-ca.pem" --verifier-key "$lab/verifier.pub" \
+     --verifier http://127.0.0.1:5102/verify --tls-name "$(cat "$lab/tls-name")" \
+     --ima-log-url http://127.0.0.1:8080/ima.log https://127.0.0.1:8443/
+   ```
+
+   Expect `Tarako OK` on stdout. The lab exception is not a strict TCB pass.
+
 ## Manual split-host setup
 
-This opt-in suite connects to your **already running Intel TDX guest**. It does
-not provision the guest, SSH into it, or use the four-VM mock signer. The host
-of the verifier VM runs the one-shot client. The verifier VM never contacts the
-TDX guest. Only the client fetches its plain HTTP IMA log.
+Use this setup if you already operate a TDX guest or want the verifier on its
+own VM. Only the client contacts the guest; it relays the SHA-384 IMA log to
+the verifier.
 
 ## TDX guest
 
@@ -60,7 +164,7 @@ URL and include intermediates in the certificate file as needed.
 ```sh
 nix shell .#tls-attester nixpkgs#fsverity-utils
 install -m755 "$(command -v tarako-tdx-attester)" /srv/tarako/attester
-fsverity enable --hash-alg=sha256 /srv/tarako/attester
+fsverity enable --hash-alg=sha256 --block-size=1024 /srv/tarako/attester
 /srv/tarako/attester 192.0.2.10:8443 attester.crt attester.key
 ```
 
@@ -117,6 +221,10 @@ with TLS validation enabled. See the DCAP package's
 [Intel PCS documentation](https://api.portal.trustedservices.intel.com/content/documentation.html).
 The verifier requires current collateral and software QVL `OK`; it cannot fall
 back to signature-only verification. Its wall clock must be trustworthy.
+
+For DCAP `OUT_OF_DATE` (`0xa002`), follow Intel's
+[TCB recovery guidance](https://www.intel.com/content/www/us/en/developer/topic-technology/software-security-guidance/trusted-computing-base-recovery-attestation.html)
+and test a fresh quote after updating the host.
 
 Forward host loopback to VM loopback, e.g. on the client machine run
 `ssh -N -L 127.0.0.1:5102:127.0.0.1:5102 verifier-vm`. This is **not** SSH to the

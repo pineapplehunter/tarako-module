@@ -14,8 +14,7 @@ on loopback. The policy pins `mr_td`, `rtmr0`, `rtmr1`, `rtmr3`, and
 `ima_start_rtmr2` (each 48-byte hex), `ima_skip_count` (nonnegative integer),
 and `fsverity_digest` (32-byte hex). The signing key is an EC private key in PEM.
 The client supplies the exact CMW string and the plaintext SHA-384 IMA bank log;
-the verifier never fetches either from the guest. It allows up to 4 MiB of
-UTF-8 IMA log and 5 MiB of HTTP JSON body.
+the verifier never fetches either from the guest. It limits the decoded UTF-8 IMA log to 4 MiB and the TDX quote to 16 KiB.
 
 Only `ima_replay` indicates a retryable snapshot mismatch. A matching RTMR2
 prefix must independently authenticate the claimed TAK through an `ima-buf`

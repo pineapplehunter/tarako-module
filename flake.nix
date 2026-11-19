@@ -26,13 +26,49 @@
               system,
               ...
             }:
+            let
+              liveTdxDriver =
+                {
+                  attesterOnly ? false,
+                  allowOutOfDate ? false,
+                }:
+                (pkgs.testers.runNixOSTest {
+                  imports = [ ./test/live-tdx ];
+                  tarakoAttesterOnly = attesterOnly;
+                  tarakoTestAllowOutOfDate = allowOutOfDate;
+                  node.specialArgs.tarakoTools = {
+                    inherit (self'.packages)
+                      tls-attester
+                      live-tdx-candidate-policy
+                      live-tdx-ima-log
+                      live-tdx-smoke
+                      ;
+                    verifier =
+                      if allowOutOfDate then
+                        self'.packages.live-tdx-verifier-lab-allow-out-of-date
+                      else
+                        self'.packages.live-tdx-verifier;
+                  };
+                }).driver;
+            in
             lib.mkIf (system == "x86_64-linux") {
               packages.dcap-verify = pkgs.callPackage ./live-tdx/dcap/package.nix { };
               packages.live-tdx-verifier = pkgs.callPackage ./live-tdx/verifier/package.nix {
                 dcapVerifier = self'.packages.dcap-verify;
               };
               checks.live-tdx-verifier = self'.packages.live-tdx-verifier;
-              packages.live-tdx-test-driver = (pkgs.testers.runNixOSTest ./test/live-tdx).driver;
+              packages.live-tdx-test-driver = liveTdxDriver { };
+              packages.live-tdx-attester-driver = liveTdxDriver { attesterOnly = true; };
+
+              # TODO: Remove the lab variants once the host returns QVL OK.
+              packages.live-tdx-verifier-lab-allow-out-of-date =
+                pkgs.callPackage ./live-tdx/verifier/package.nix
+                  {
+                    dcapVerifier = pkgs.callPackage ./live-tdx/dcap/package.nix {
+                      enableTestOverride = true;
+                    };
+                  };
+              packages.live-tdx-test-driver-lab-allow-out-of-date = liveTdxDriver { allowOutOfDate = true; };
             };
         }
       ];
