@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tarako-tls-mock"
+version = "0.1.0"
+dependencies = ["cryptography>=42"]
+
+[project.scripts]
+tarako-mock-platform-signer = "tarako_tls_mock.mock_signer:main"
+tarako-tls-verifier = "tarako_tls_mock.verifier:main"
+
+[tool.setuptools]
+packages = ["tarako_tls_mock"]

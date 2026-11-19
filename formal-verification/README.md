@@ -208,7 +208,7 @@ nix develop .#formal-verification --command \
   proverif formal-verification/tarako-attestation.pv
 
 nix develop .#formal-verification --command \
-  python3 formal-verification/test-negative-models.py
+  tarako-verify-model
 ```
 
 ProVerif 2.05 is supplied by the pinned flake. The default development shell also

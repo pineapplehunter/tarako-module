@@ -33,7 +33,7 @@ The kernel computes `ECDSA-SHA256(SK, fsverity_digest || user_data)` for 128 byt
 
 ## Non-obvious dev tools
 
-- `python3 dev/generate_rust_analyzer.py > rust-project.json` - generates IDE config for the kernel module.
+- `nix develop --command generate-rust-analyzer > rust-project.json` - generates IDE config for the kernel module.
 
 ## Conventions
 

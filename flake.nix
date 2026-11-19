@@ -34,6 +34,20 @@
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.latest = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
           packages.attester = pkgs.callPackage ./attester/package.nix { };
+          packages.generate-rust-analyzer = pkgs.writers.writePython3Bin "generate-rust-analyzer" {
+            doCheck = false; # Keep the existing generator's formatting.
+          } ./dev/generate_rust_analyzer.py;
+          packages.generate-platform-fixtures = pkgs.writers.writePython3Bin "generate-platform-fixtures" {
+            makeWrapperArgs = [ "--prefix" "PATH" ":" (pkgs.lib.makeBinPath [ pkgs.openssl ]) ];
+          } ./test/platform-evidence/generate-fixtures.py;
+          packages.verify-model = pkgs.writers.writePython3Bin "tarako-verify-model" {
+            doCheck = false; # The check runs the model and every negative case.
+            makeWrapperArgs = [
+              "--set-default" "TARAKO_MODEL" "${./formal-verification/tarako-attestation.pv}"
+              "--prefix" "PATH" ":" (pkgs.lib.makeBinPath [ pkgs.proverif ])
+            ];
+          } ./formal-verification/test-negative-models.py;
+          packages.tls-attester = pkgs.callPackage ./tls-attester/package.nix { };
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
           packages.kernel-src =
@@ -50,15 +64,11 @@
           checks.formal-verification =
             pkgs.runCommand "tarako-formal-verification"
               {
-                nativeBuildInputs = [
-                  pkgs.proverif
-                  pkgs.python3
-                ];
+                nativeBuildInputs = [ self'.packages.verify-model ];
               }
               ''
-                cp -r ${./formal-verification} formal-verification
-                python3 formal-verification/test-negative-models.py
-                touch $out
+                tarako-verify-model
+                touch "$out"
               '';
           checks.clippy = self'.packages.default.overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
@@ -69,6 +79,7 @@
           });
           checks.quote-benchmark = pkgs.testers.runNixOSTest ./test/quote-benchmark;
           checks.quote-tools = pkgs.callPackage ./test/quote-tools { };
+          packages.tls-mock-services = pkgs.callPackage ./test/tls-attestation/package.nix { };
 
           # Build these on any machine, then run the resulting test driver on
           # the TDX host (outside the Nix build sandbox). Pin vendor QEMU for
@@ -86,12 +97,13 @@
             formal-verification = pkgs.mkShell {
               packages = [
                 pkgs.proverif
-                pkgs.python3
+                self'.packages.verify-model
               ];
             };
             default = pkgs.mkShell {
               packages = with pkgs; [
                 (python3.withPackages (ps: [ ps.cryptography ]))
+                self'.packages.generate-rust-analyzer
                 proverif
                 rustPlatform.bindgenHook
                 (rust-bin.stable.latest.default.override {

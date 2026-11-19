@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-MODEL = Path(__file__).with_name("tarako-attestation.pv")
+MODEL = Path(os.environ.get("TARAKO_MODEL", Path(__file__).with_name("tarako-attestation.pv")))
 PROCESS_START = "\nprocess\n"
 EXPECTED_SECURITY_QUERIES = 12
 REACHABILITY_QUERY = """
