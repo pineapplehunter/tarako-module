@@ -1,0 +1,63 @@
+--- a/security/integrity/ima_rtmr/detect.c
++++ b/security/integrity/ima_rtmr/detect.c
+@@ -11,6 +11,30 @@
+ 
+ #include <linux/err.h>
+ #include <linux/fs.h>
++#include <linux/mount.h>
++#include <linux/string.h>
++
++/* Built-in init runs before userspace mounts /sys. The open file pins the
++ * private mount for the lifetime of the extender. */
++struct file *ima_rtmr_open(const char *path)
++{
++    struct file_system_type *type;
++    struct vfsmount *mnt;
++    struct file *file;
++
++    if (strncmp(path, "/sys/", 5))
++        return ERR_PTR(-EINVAL);
++    type = get_fs_type("sysfs");
++    if (!type)
++        return ERR_PTR(-ENODEV);
++    mnt = kern_mount(type);
++    put_filesystem(type);
++    if (IS_ERR(mnt))
++        return ERR_CAST(mnt);
++    file = file_open_root_mnt(mnt, path + 5, O_RDWR, 0);
++    kern_unmount(mnt);
++    return file;
++}
+ 
+ /* Add new entries here as more CC architectures gain tsm-mr support */
+ static const char* const candidate_paths[] = {
+@@ -22,7 +46,7 @@
+     int i;
+ 
+     for (i = 0; i < ARRAY_SIZE(candidate_paths); i++) {
+-        f = filp_open(candidate_paths[i], O_RDWR, 0);
++        f = ima_rtmr_open(candidate_paths[i]);
+         if (!IS_ERR(f)) {
+             *used_path = candidate_paths[i];
+             return f;
+--- a/security/integrity/ima_rtmr/detect.h
++++ b/security/integrity/ima_rtmr/detect.h
+@@ -7,6 +7,7 @@
+ 
+ struct file;
+ 
++struct file *ima_rtmr_open(const char *path);
+ struct file* ima_rtmr_detect(const char** used_path);
+ int ima_rtmr_snapshot_initial(struct file* mr_file, int digest_size, u8* out);
+ 
+--- a/security/integrity/ima_rtmr/main.c
++++ b/security/integrity/ima_rtmr/main.c
+@@ -50,7 +50,7 @@ static int __init ima_rtmr_init(void) {
+             pr_err("mr_path does not look like a tsm-mr RTMR attribute: %s\n", mr_path);
+             return -EINVAL;
+         }
+-        mr_file = filp_open(mr_path, O_RDWR, 0);
++        mr_file = ima_rtmr_open(mr_path);
+         if (IS_ERR(mr_file)) {
+             pr_err("cannot open %s: %ld\n", mr_path, PTR_ERR(mr_file));
+             return PTR_ERR(mr_file);

@@ -115,7 +115,10 @@ in
         attester.wait_for_unit("multi-user.target", timeout=timedelta(minutes=2))
         # Ensure the RTMR extender is attached before Tarako measures its key.
         attester.succeed("test -d /sys/kernel/config/tsm/report")
-        attester.succeed("test \"$(cat /sys/kernel/ima_rtmr/disabled)\" = 0")
+        status, _ = attester.execute("test \"$(cat /sys/kernel/ima_rtmr/disabled)\" = 0")
+        if status != 0:
+            print(attester.succeed("dmesg | grep -Ei 'ima_rtmr|tdx_guest|ima:' || true"))
+            raise AssertionError("built-in IMA-to-RTMR extender is not active")
         attester.succeed("modprobe tarako && test -c /dev/tarako")
         log = "/sys/kernel/security/ima/ascii_runtime_measurements_sha384"
         attester.wait_until_succeeds(f"grep -q 'ima-buf .* public-key-generate ' {log}", timeout=timeout)
@@ -174,7 +177,11 @@ in
         candidate_path = os.environ.get("TARAKO_TDX_WRITE_CANDIDATE")
         policy_path = os.environ.get("TARAKO_TDX_POLICY")
         if bool(candidate_path) == bool(policy_path):
-            raise RuntimeError("Set exactly one of TARAKO_TDX_WRITE_CANDIDATE or TARAKO_TDX_POLICY")
+            raise SystemExit(
+                "Choose exactly one mode:\n"
+                "  Collect a candidate: TARAKO_TDX_WRITE_CANDIDATE=./candidate.json nix run .#live-tdx-test-driver\n"
+                "  Test a reviewed policy: TARAKO_TDX_POLICY=./reviewed.json nix run .#live-tdx-test-driver"
+            )
         if candidate_path:
             prepare_attester()
             candidate = attester.succeed(f"tarako-tdx-candidate-policy {measured}/attester 2>{state}/candidate-notice")

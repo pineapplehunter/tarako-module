@@ -36,6 +36,7 @@ in
           pkgs.e2fsprogs
           pkgs.fsverity-utils
           pkgs.openssl
+          pkgs.tpm2-tools
         ];
         networking.firewall.allowedTCPPorts = [ 8443 ];
         systemd.services."tls-attester@" = service [
@@ -82,12 +83,42 @@ in
   testScript = ''
     """Exercise real Tarako ioctls and TLS, with a mock (not TDX) platform signer."""
     from datetime import timedelta
+    from hashlib import new, sha256
     from itertools import product
     from shlex import quote
+    from struct import pack
 
     STATE = "/run/tls-attestation"
     MEASURED = "/mnt/tls-attestation"
-    IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements"
+    IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements_sha256"
+
+
+    def measured_tak(log, expected_pcr):
+        pcr = bytes(32)
+        tak = None
+        for line in log.splitlines():
+            index, digest, template, *fields = line.split()
+            if index != "10":
+                continue
+            bank_digest = bytes.fromhex(digest)
+            assert len(bank_digest) == 32, "expected a SHA-256 IMA bank digest"
+            if template == "ima-buf" and len(fields) >= 2 and fields[1] == "public-key-generate":
+                assert tak is None, "multiple TARAKO public-key events in IMA"
+                hash_field, event_name, payload = fields
+                algorithm, inner_digest = hash_field.split(":", 1)
+                tak = bytes.fromhex(payload)
+                assert len(tak) == 33 and tak[0] in (2, 3), "invalid compressed TARAKO public key"
+                inner = new(algorithm, tak).digest()
+                assert inner.hex() == inner_digest, "TARAKO public-key payload digest mismatch"
+                # Rebuild ima-buf so the PCR match also commits to the displayed key.
+                data = (algorithm.encode() + b":\0" + inner, event_name.encode() + b"\0", tak)
+                encoded = b"".join(pack("<I", len(field)) + field for field in data)
+                assert sha256(encoded).digest() == bank_digest, "TARAKO IMA template digest mismatch"
+            pcr = sha256(pcr + (bank_digest if any(bank_digest) else b"\xff" * 32)).digest()
+            if pcr == expected_pcr:
+                assert tak is not None, "TARAKO public key is outside the matching IMA prefix"
+                return tak.hex()
+        raise AssertionError("SHA-256 IMA log did not replay to vTPM PCR 10")
 
 
     def write_public(machine, name, contents):
@@ -149,12 +180,17 @@ in
         assert algorithm == "sha256" and len(bytes.fromhex(digest)) == 32, measured
         digests[binary] = digest
 
-    # Bootstrap the test services with the real boot's IMA-measured Tarako key.
-    attester.succeed("test -c /dev/tarako")
-    tak = attester.succeed(
-        f"awk '$3 == \"ima-buf\" && $5 == \"public-key-generate\" {{print $6}}' {IMA_LOG}"
-    ).strip()
-    assert len(bytes.fromhex(tak)) == 33 and tak[:2] in ("02", "03"), tak
+    # Check the boot log before using its key to bootstrap the mock services.
+    with subtest("IMA replay to vTPM PCR 10 binds the TARAKO public key"):
+        attester.succeed("test -c /dev/tarako")
+        # Read PCR first: later measurements may append to the log, but the
+        # key must be in the prefix that matches this snapshot.
+        pcr = bytes.fromhex(attester.succeed(
+            f"tpm2_pcrread -T device:/dev/tpmrm0 -o {STATE}/ima.pcr sha256:10 >/dev/null && "
+            f"od -An -v -tx1 {STATE}/ima.pcr"
+        ))
+        assert len(pcr) == 32, "expected one SHA-256 PCR value"
+        tak = measured_tak(attester.succeed(f"cat {IMA_LOG}"), pcr)
     for machine in (mock, verifier):
         machine.succeed(f"printf %s {quote(tak)} | xxd -r -p > {STATE}/tak.bin")
     # The platform root stands in for Intel's CA. The signer gets a leaf, not the

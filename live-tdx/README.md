@@ -2,29 +2,25 @@
 
 ## Run from the TDX host with the NixOS test driver
 
-On an x86-64 TDX host, build the driver, then run it **outside** the Nix build
-sandbox. The host must provide KVM, vhost-vsock and a working Intel QGS on
+Run the driver on an x86-64 TDX host **outside** the Nix build sandbox.
+The host must provide KVM, vhost-vsock and a working Intel QGS on
 vsock CID 2, port 4050. The driver boots a TDX attester and a regular VM that
 runs both the verifier and the client. No preconfigured guest or SSH tunnel
 is needed. The verifier VM needs network access to your collateral source.
 
-```sh
-DRIVER=$(nix build --no-link --print-out-paths path:.#live-tdx-test-driver)
-```
-
-First collect candidate reference values from the test image on a known-good
-host. This mode does **not** enroll
-those values or run the attestation test:
+Choose exactly one mode. First collect candidate reference values from the
+test image on a known-good host. This does **not** enroll those values or run
+the attestation test:
 
 ```sh
-TARAKO_TDX_WRITE_CANDIDATE="$PWD/candidate.json" "$DRIVER/bin/nixos-test-driver"
+TARAKO_TDX_WRITE_CANDIDATE=./candidate.json nix run .#live-tdx-test-driver
 ```
 
 Review the candidate and save the approved values separately as `reviewed.json`.
 Then run:
 
 ```sh
-TARAKO_TDX_POLICY="$PWD/reviewed.json" "$DRIVER/bin/nixos-test-driver"
+TARAKO_TDX_POLICY=./reviewed.json nix run .#live-tdx-test-driver
 ```
 
 The driver sets up fs-verity, test HTTPS credentials, the IMA log service, and
@@ -47,8 +43,8 @@ Use a measured guest kernel with TARAKO, the SHA-384 IMA bank and the pinned
 IMA-to-RTMR2 extender (see `kernel/ima-rtmr-kernel.nix`). Ensure the extender is
 active **before** TARAKO records its key. The build and boot you approve must
 protect the TARAKO signer and enable the intended measurement policy. A fresh
-Intel quote is required on each handshake: mount configfs, load `tdx_guest`,
-and provision your TDX host's working quote/QGS path. The guest attester uses
+Intel quote is required on each handshake: mount configfs, ensure the TDX
+guest driver is active, and provision your TDX host's working quote/QGS path. The guest attester uses
 `/sys/kernel/config/tsm/report`, not a network mock signer or a local TDREPORT.
 
 Copy the packaged `tarako-tdx-attester` to an fs-verity-capable filesystem,

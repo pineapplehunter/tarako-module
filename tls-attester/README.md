@@ -25,8 +25,10 @@ reattestation and attesting TLS private-key provenance are out of scope.
   The platform CA is never used for HTTPS authentication.
 - **Verifier:** has a separate result-signing key pinned by the client. Its
   short-lived verdict covers the binder, the HTTPS leaf-key hash, and the exact
-  CMW bytes. The test harness provisions the approved fs-verity digest and the
-  boot's real IMA-measured TARAKO key as test policy.
+  CMW bytes. The harness replays the boot's SHA-256 IMA log against vTPM PCR 10
+  and checks that the matched prefix commits to the TARAKO key. It then
+  provisions that key and the approved fs-verity digest as test policy. The
+  mock TLS verifier does not appraise IMA itself.
 
 The `tls-mock-services` Python package provides `tarako-mock-platform-signer`
 and `tarako-tls-verifier`. The test starts them and the attester through declared
