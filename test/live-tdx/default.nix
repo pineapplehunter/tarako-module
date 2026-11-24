@@ -39,7 +39,6 @@ in
         imports = [ ../../live-tdx/guest-module.nix ];
         boot.kernelPackages = pkgs.linuxPackages_latest;
         boot.kernelParams = [
-          "ima_hash=sha384"
           "ima_policy=critical_data"
         ];
         boot.extraModulePackages = [
@@ -145,6 +144,7 @@ in
     )
     + ''
       from datetime import timedelta
+      import hashlib
 
       state = "${state}"
       measured = "${measured}"
@@ -153,9 +153,9 @@ in
       def prepare_attester():
           attester.start(allow_reboot=False)
           attester.wait_for_unit("multi-user.target", timeout=timedelta(minutes=2))
-          # Ensure the RTMR extender is attached before Tarako measures its key.
+          # The synchronous sink exports the baseline before the boot aggregate.
           attester.succeed("test -d /sys/kernel/config/tsm/report")
-          status, _ = attester.execute("test \"$(cat /sys/kernel/ima_rtmr/disabled)\" = 0")
+          status, _ = attester.execute("test -r /sys/kernel/ima_rtmr2/initial")
           if status != 0:
               print(attester.succeed("dmesg | grep -Ei 'ima_rtmr|tdx_guest|ima:' || true"))
               raise AssertionError("built-in IMA-to-RTMR extender is not active")
@@ -166,6 +166,23 @@ in
               raise AssertionError("guest kernel did not export the SHA-384 IMA measurement log")
           attester.succeed("modprobe tarako && test -c /dev/tarako")
           attester.succeed(f"grep -q 'ima-buf .* public-key-generate ' {log}")
+          # Snapshot the register first: later log appends cannot change its prefix.
+          mr = "/sys/class/misc/tdx_guest/measurements/rtmr2:sha384"
+          target = bytes.fromhex(attester.succeed(f"od -An -v -tx1 {mr}"))
+          current = bytes.fromhex(attester.succeed("cat /sys/kernel/ima_rtmr2/initial"))
+          assert len(target) == len(current) == 48
+          lines = attester.succeed(f"cat {log}").splitlines()
+          assert "boot_aggregate" in lines[0], "expected a fresh IMA boot"
+          saw_key = False
+          for line in lines:
+              fields = line.split()
+              bank = bytes.fromhex(fields[1].removeprefix("sha384:"))
+              assert len(bank) == 48
+              current = hashlib.sha384(current + (bank if any(bank) else bytes([255]) * 48)).digest()
+              saw_key |= fields[2] == "ima-buf" and fields[4] == "public-key-generate"
+              if current == target:
+                  break
+          assert current == target and saw_key, "RTMR2 does not cover IMA from boot through TAK"
           # An independent verity filesystem avoids changing the root or rebooting the TD.
           attester.succeed(f"install -d -m 0700 {state}; mkdir -p {measured}")
           attester.succeed(f"truncate -s 128M {state}/verity.img; mkfs.ext4 -q -F -O verity {state}/verity.img")

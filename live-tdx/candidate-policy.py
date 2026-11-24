@@ -6,7 +6,7 @@ import re
 import subprocess
 
 MEASUREMENTS = Path("/sys/class/misc/tdx_guest/measurements")
-EXTENDER = Path("/sys/kernel/ima_rtmr")
+IMA_RTMR2 = Path("/sys/kernel/ima_rtmr2")
 
 
 def measurement(name):
@@ -21,11 +21,8 @@ def main():
     parser.add_argument("attester", type=Path, help="fs-verity binary")
     args = parser.parse_args()
     try:
-        if (EXTENDER / "disabled").read_text().strip() != "0":
-            raise ValueError("IMA RTMR extender is disabled")
-        initial = (EXTENDER / "initial").read_text().strip()
-        skip = int((EXTENDER / "skip_count").read_text().strip())
-        if not re.fullmatch(r"[0-9a-fA-F]{96}", initial) or skip < 0:
+        initial = (IMA_RTMR2 / "initial").read_text().strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{96}", initial):
             raise ValueError("invalid IMA replay baseline")
         line = subprocess.run(
             ["fsverity", "measure", str(args.attester.resolve())],
@@ -39,7 +36,7 @@ def main():
             "rtmr1": measurement("rtmr1"),
             "rtmr3": measurement("rtmr3"),
             "ima_start_rtmr2": initial.lower(),
-            "ima_skip_count": skip,
+            "ima_skip_count": 0,
             "fsverity_digest": line[0].split(":")[1].lower(),
         }
     except (OSError, ValueError, subprocess.CalledProcessError,

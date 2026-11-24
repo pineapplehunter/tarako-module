@@ -33,7 +33,7 @@ class VerifierTests(unittest.TestCase):
         digest = b"d" * 32
         self.policy = verifier.parse_policy(dict(
             mr_td="11" * 48, rtmr0="22" * 48, rtmr1="33" * 48, rtmr3="44" * 48,
-            ima_skip_count=1, ima_start_rtmr2=self.baseline.hex(), fsverity_digest=digest.hex()))
+            ima_skip_count=0, ima_start_rtmr2=self.baseline.hex(), fsverity_digest=digest.hex()))
         private = ec.generate_private_key(ec.SECP256R1())
         self.pub = private.public_key().public_bytes(serialization.Encoding.X962,
                                                      serialization.PublicFormat.CompressedPoint)
@@ -45,9 +45,9 @@ class VerifierTests(unittest.TestCase):
             "hash": quote_hash.hex(), "pubkey": self.pub.hex(), "sig_r": f"{r:064x}",
             "sig_s": f"{s:064x}"}}
         self.record, record_digest = tak_record(self.pub)
-        self.skipped = f"10 {'77' * 48} ima-ng skipped\n"
+        self.first = f"10 {'77' * 48} ima-ng boot_aggregate\n"
         self.violation = f"10 {'00' * 48} ima-ng violation\n"
-        self.before_key = extend(self.baseline, b"\xff" * 48)
+        self.before_key = extend(extend(self.baseline, b"\x77" * 48), b"\xff" * 48)
         self.target = extend(self.before_key, record_digest)
         self.claims = {
             "report_data": (hashlib.sha256(b"TARAKO-TLS-REPORTDATA-V1\0" + quote_hash).digest()
@@ -57,7 +57,7 @@ class VerifierTests(unittest.TestCase):
         }
         self.result_key = ec.generate_private_key(ec.SECP256R1())
         self.request = {"binder": self.binder.hex(), "spki_hash": self.spki.hex(),
-                        "ima_log": self.skipped + self.violation + self.record}
+                        "ima_log": self.first + self.violation + self.record}
         self.update_cmw()
 
     def update_cmw(self):
@@ -92,21 +92,24 @@ class VerifierTests(unittest.TestCase):
                                             ec.ECDSA(hashes.SHA256()))
 
     def test_retryable_replay_mismatch(self):
-        self.request["ima_log"] = self.skipped + self.violation
+        self.request["ima_log"] = self.first + self.violation
         self.reject("ima_replay")
 
     def test_malformed_log_not_retryable(self):
-        self.request["ima_log"] = self.skipped + "10 sha256:abcd ima-buf\n"
+        self.request["ima_log"] = self.first + "10 sha256:abcd ima-buf\n"
         self.reject("ima")
 
     def test_uncommitted_suffix_cannot_supply_key(self):
         self.claims["rtmrs"][2] = self.before_key.hex()
         self.reject("ima")
 
-    def test_skipped_record_cannot_supply_key(self):
-        self.claims["rtmrs"][2] = self.before_key.hex()
-        self.request["ima_log"] = self.record + self.violation
-        self.reject("ima")
+    def test_missing_first_entry_breaks_replay(self):
+        self.request["ima_log"] = self.violation + self.record
+        self.reject("ima_replay")
+
+    def test_legacy_skip_policy_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "ima_skip_count"):
+            verifier.parse_policy(dict(self.policy, ima_skip_count=1))
 
     def test_forged_template_fields_fail_despite_replay_match(self):
         self.request["ima_log"] = self.request["ima_log"].replace(

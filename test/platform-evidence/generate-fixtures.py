@@ -39,18 +39,19 @@ def main():
     dest = parser.parse_args().output_directory
     dest.mkdir(parents=True, exist_ok=True)
     initial = bytes(range(48))  # Deliberately nonzero startup baseline.
-    skipped, _ = record("before-extender", b"preexisting entry")
+    startup, first_digest = record("startup", b"first measured entry")
     # The displayed zero template digest is extended as 48 bytes of 0xff.
     violation = f"10 {'00' * 48} ima-ng sha256:{'00' * 32} invalidated\n"
-    after_violation = digest("sha384", initial + b"\xff" * 48)
+    after_startup = digest("sha384", initial + first_digest)
+    after_violation = digest("sha384", after_startup + b"\xff" * 48)
     expected_tak = b"\x03" + X
     other_tak = b"\x02" + X
-    values = {"initial": initial.hex(), "skip": 1, "tak": expected_tak.hex()}
+    values = {"initial": initial.hex(), "skip": 0, "tak": expected_tak.hex()}
     for name, tak in (
         ("with-tak", expected_tak), ("without-expected-tak", other_tak)
     ):
         entry, bank = record("public-key-generate", tak)
-        (dest / f"{name}.log").write_text(skipped + violation + entry)
+        (dest / f"{name}.log").write_text(startup + violation + entry)
         values[name] = digest("sha384", after_violation + bank).hex()
     (dest / "golden.json").write_text(json.dumps(values, indent=2) + "\n")
 

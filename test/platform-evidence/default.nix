@@ -1,7 +1,7 @@
 { pkgs }:
 let
   tdx-verify = pkgs.callPackage ../../tdx/verify.nix { };
-  # Keep in sync with kernel/ima-rtmr-kernel.nix.
+  # Standalone replay oracle for these fixtures, not the guest kernel backend.
   imaRtmrSrc = pkgs.fetchFromGitHub {
     owner = "acompany-develop";
     repo = "ima-rtmr-extend";

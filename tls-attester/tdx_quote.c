@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "evidence.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -34,20 +35,31 @@ static int read_blob(int dir, const char *path, uint8_t *buffer, size_t *length)
     }
 }
 
-static int ima_active(void)
+static int ima_rtmr2_ready(void)
 {
-    uint8_t state[3];
-    size_t size = sizeof(state);
-    if (read_blob(AT_FDCWD, "/sys/kernel/ima_rtmr/disabled", state, &size) &&
-        size == 2 && memcmp(state, "0\n", 2) == 0)
-        return 1;
-    fputs("IMA RTMR extender is unavailable or disabled\n", stderr);
+    const char *path = "/sys/kernel/ima_rtmr2/initial";
+    uint8_t baseline[2 * 48 + 1]; /* SHA-384 in hex, followed by a newline. */
+    size_t size = sizeof(baseline);
+    if (!read_blob(AT_FDCWD, path, baseline, &size)) {
+        perror(path);
+        return 0;
+    }
+    if (size == sizeof(baseline) && baseline[size - 1] == '\n') {
+        size_t i = 0;
+        while (i < size - 1 && isxdigit(baseline[i]))
+            i++;
+        if (i == size - 1)
+            return 1;
+    }
+    fputs("Invalid IMA RTMR2 baseline\n", stderr);
     return 0;
 }
 
 int tdx_quote(uint8_t *output, size_t *size, const uint8_t report[64])
 {
-    if (!ima_active())
+    /* The synchronous sink exposes its baseline after initialization and
+     * panics on extend failure. The remote verifier still checks replay. */
+    if (!ima_rtmr2_ready())
         return 0;
     char instance[] = "/sys/kernel/config/tsm/report/tarako-XXXXXX";
     if (!mkdtemp(instance)) {
@@ -95,7 +107,7 @@ int tdx_quote(uint8_t *output, size_t *size, const uint8_t report[64])
         fputs("TDX TSM returned an empty quote\n", stderr);
         goto done;
     }
-    ok = ima_active();
+    ok = 1;
 done:
     if (dir >= 0)
         close(dir);

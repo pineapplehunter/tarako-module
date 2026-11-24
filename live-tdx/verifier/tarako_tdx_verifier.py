@@ -66,8 +66,8 @@ def parse_policy(value):
     measurements = ("mr_td", "rtmr0", "rtmr1", "rtmr3", "ima_start_rtmr2")
     fields(value, *measurements, "fsverity_digest", "ima_skip_count")
     skip = value["ima_skip_count"]
-    if type(skip) is not int or skip < 0:
-        raise ValueError("invalid ima_skip_count")
+    if type(skip) is not int or skip != 0:
+        raise ValueError("full IMA coverage requires ima_skip_count = 0")
     return {**{name: hex_bytes(value[name], 48) for name in measurements},
             "ima_skip_count": skip,
             "fsverity_digest": hex_bytes(value["fsverity_digest"], 32)}
@@ -122,15 +122,14 @@ def measured_key(columns, digest):
     return None
 
 
-def replay_key(log, baseline, skip, target, expected):
-    # Pinned ima-rtmr-extend: skip the startup entries, then extend the
+def replay_key(log, baseline, target, expected):
+    # Start with the very first IMA record. Extend the
     # SHA-384 template digest (FF for a violation). Stop at the first match.
     current = baseline
     key = None
     ambiguous = False
-    index = 0
     for line in log.split(b"\n"):
-        if index >= skip and current == target:
+        if current == target:
             break
         columns = line.split(None, 6)
         if not columns:
@@ -144,9 +143,6 @@ def replay_key(log, baseline, skip, target, expected):
             digest = hex_bytes(token.decode("ascii"), 48)
         except ValueError as error:
             raise Rejected("ima") from error
-        index += 1
-        if index <= skip:
-            continue
         if any(digest):
             candidate = measured_key(columns, digest)
             if candidate is not None:
@@ -156,7 +152,7 @@ def replay_key(log, baseline, skip, target, expected):
             digest = b"\xff" * 48
         current = hashlib.sha384(current + digest).digest()
 
-    if index < skip or current != target:
+    if current != target:
         raise Rejected("ima_replay")
     if ambiguous or key is None or key != expected:
         raise Rejected("ima")
@@ -211,7 +207,7 @@ def verify(request, result_key, policy):
     except (InvalidSignature, ValueError) as error:
         raise Rejected("tarako") from error
 
-    replay_key(log, policy["ima_start_rtmr2"], policy["ima_skip_count"], rtmrs[2], pubkey)
+    replay_key(log, policy["ima_start_rtmr2"], rtmrs[2], pubkey)
     expires = int(time.time()) + 30
     signed = RESULT_DOMAIN + binder + spki_hash + sha256(cmw) + expires.to_bytes(8, "big")
     signature = result_key.sign(signed, ec.ECDSA(hashes.SHA256()))

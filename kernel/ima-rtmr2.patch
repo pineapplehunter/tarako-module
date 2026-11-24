@@ -1,0 +1,197 @@
+diff --git a/arch/x86/include/asm/tdx.h b/arch/x86/include/asm/tdx.h
+index 89e97d5..cbc4a3c 100644
+--- a/arch/x86/include/asm/tdx.h
++++ b/arch/x86/include/asm/tdx.h
+@@ -80,6 +80,10 @@ bool tdx_early_handle_ve(struct pt_regs *regs);
+ int tdx_mcall_get_report0(u8 *reportdata, u8 *tdreport);
+ 
+ int tdx_mcall_extend_rtmr(u8 index, u8 *data);
++#ifdef CONFIG_IMA_RTMR
++void tdx_ima_rtmr_init(int hash_algo);
++void tdx_ima_rtmr_extend(const u8 *digest, bool violation);
++#endif
+ 
+ u64 tdx_hcall_get_quote(u8 *buf, size_t size);
+ 
+diff --git a/drivers/virt/coco/guest/tsm-mr.c b/drivers/virt/coco/guest/tsm-mr.c
+index 657b9c5..0c50942 100644
+--- a/drivers/virt/coco/guest/tsm-mr.c
++++ b/drivers/virt/coco/guest/tsm-mr.c
+@@ -65,14 +65,15 @@ static ssize_t tm_digest_read(struct file *filp, struct kobject *kobj,
+ 	 * ctx->refresh() is necessary only for LIVE MRs, while others retain
+ 	 * their values from their respective last ctx->write().
+ 	 */
+-	if ((mr->mr_flags & TSM_MR_F_LIVE) && !ctx->in_sync) {
++	if ((mr->mr_flags & TSM_MR_F_LIVE) &&
++	    (!ctx->in_sync || (mr->mr_flags & TSM_MR_F_UNCACHED))) {
+ 		up_read(&ctx->rwsem);
+ 
+ 		rc = down_write_killable(&ctx->rwsem);
+ 		if (rc)
+ 			return rc;
+ 
+-		if (!ctx->in_sync) {
++		if (!ctx->in_sync || (mr->mr_flags & TSM_MR_F_UNCACHED)) {
+ 			rc = ctx->tm->refresh(ctx->tm);
+ 			ctx->in_sync = !rc;
+ 			trace_tsm_mr_refresh(mr, rc);
+diff --git a/drivers/virt/coco/tdx-guest/tdx-guest.c b/drivers/virt/coco/tdx-guest/tdx-guest.c
+index d0303e3..eb985b5 100644
+--- a/drivers/virt/coco/tdx-guest/tdx-guest.c
++++ b/drivers/virt/coco/tdx-guest/tdx-guest.c
+@@ -90,11 +90,73 @@ static int tdx_do_extend(u8 mr_ind, const u8 *data)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_IMA_RTMR
++/* Private TDCALL operands: never share the userspace report buffer or hold
++ * mr_lock (which nests user copies) under IMA's measurement-list mutex.
++ * Retry only OPERAND_BUSY, for which no extend was committed.
++ */
++static u8 ima_operand[TDX_REPORTDATA_LEN] __aligned(64);
++static u8 ima_report[TDX_REPORT_LEN] __initdata __aligned(TDX_REPORT_LEN);
++static u8 ima_initial[SHA384_DIGEST_SIZE] __ro_after_init;
++
++static ssize_t initial_show(struct kobject *k, struct kobj_attribute *a, char *buf)
++{
++	return sysfs_emit(buf, "%*phN\n", (int)sizeof(ima_initial), ima_initial);
++}
++static struct kobj_attribute initial_attr = __ATTR_RO(initial);
++
++void __init tdx_ima_rtmr_init(int hash_algo)
++{
++	struct kobject *k;
++	int rc;
++
++	if (!boot_cpu_has(X86_FEATURE_TDX_GUEST))
++		return;
++	if (hash_algo != HASH_ALGO_SHA384)
++		panic("IMA RTMR2 requires ima_hash=sha384");
++	do {
++		rc = tdx_mcall_get_report0(ima_operand, ima_report);
++		if (rc == -EBUSY)
++			cond_resched();
++	} while (rc == -EBUSY);
++	if (rc)
++		panic("IMA RTMR2 baseline read failed: %d", rc);
++	memcpy(ima_initial, ima_report + TDREPORT_rtmr2, sizeof(ima_initial));
++	k = kobject_create_and_add("ima_rtmr2", kernel_kobj);
++	if (!k || sysfs_create_file(k, &initial_attr.attr))
++		panic("IMA RTMR2 baseline export failed");
++}
++
++void tdx_ima_rtmr_extend(const u8 *digest, bool violation)
++{
++	int rc;
++
++	if (!boot_cpu_has(X86_FEATURE_TDX_GUEST))
++		return;
++	if (violation)
++		memset(ima_operand, 0xff, SHA384_DIGEST_SIZE);
++	else
++		memcpy(ima_operand, digest, SHA384_DIGEST_SIZE);
++	do {
++		rc = tdx_mcall_extend_rtmr(2, ima_operand);
++		if (rc == -EBUSY)
++			cond_resched();
++	} while (rc == -EBUSY);
++	if (rc)
++		panic("IMA RTMR2 extend failed: %d", rc);
++}
++#endif
++
+ #define TDX_MR_(r) .mr_value = (void *)TDREPORT_##r, TSM_MR_(r, SHA384)
+ static struct tsm_measurement_register tdx_mrs[] = {
+ 	{ TDX_MR_(rtmr0) | TSM_MR_F_RTMR },
+ 	{ TDX_MR_(rtmr1) | TSM_MR_F_RTMR },
++#ifdef CONFIG_IMA_RTMR
++	/* IMA owns writes; a sysfs read must refresh from hardware. */
++	{ TDX_MR_(rtmr2) | TSM_MR_F_LIVE | TSM_MR_F_UNCACHED },
++#else
+ 	{ TDX_MR_(rtmr2) | TSM_MR_F_RTMR },
++#endif
+ 	{ TDX_MR_(rtmr3) | TSM_MR_F_RTMR },
+ 	{ TDX_MR_(mrtd) },
+ 	{ TDX_MR_(mrconfigid) | TSM_MR_F_NOHASH },
+diff --git a/include/linux/tsm-mr.h b/include/linux/tsm-mr.h
+index 50a521f..b07ea28 100644
+--- a/include/linux/tsm-mr.h
++++ b/include/linux/tsm-mr.h
+@@ -45,6 +45,8 @@ struct tsm_measurement_register {
+ #define TSM_MR_F_WRITABLE 2
+ #define TSM_MR_F_READABLE 4
+ #define TSM_MR_F_LIVE 8
++/* Live register also modified outside the sysfs write path. */
++#define TSM_MR_F_UNCACHED 16
+ #define TSM_MR_F_RTMR (TSM_MR_F_LIVE | TSM_MR_F_WRITABLE)
+ 
+ #define TSM_MR_(mr, hash)                              \
+diff --git a/security/integrity/ima/Kconfig b/security/integrity/ima/Kconfig
+index 72654cf..8984b87 100644
+--- a/security/integrity/ima/Kconfig
++++ b/security/integrity/ima/Kconfig
+@@ -32,6 +32,15 @@ config IMA
+ 
+ if IMA
+ 
++config IMA_RTMR
++	bool "Synchronously measure the IMA log into TDX RTMR2"
++	depends on IMA && TDX_GUEST_DRIVER=y
++	help
++	  Reserve RTMR2 for SHA-384 IMA measurements on a fresh TDX boot.
++	  Extend every appended measurement before returning to the caller.
++	  On a TD, a backend failure is fatal rather than silently continuing
++	  with a partial chain. No effect outside TDX.
++
+ config IMA_KEXEC
+ 	bool "Enable carrying the IMA measurement list across a soft boot"
+ 	depends on TCG_TPM && HAVE_IMA_KEXEC
+diff --git a/security/integrity/ima/ima_init.c b/security/integrity/ima/ima_init.c
+index d53f4d8..d1883f8 100644
+--- a/security/integrity/ima/ima_init.c
++++ b/security/integrity/ima/ima_init.c
+@@ -18,6 +18,9 @@
+ #include <linux/ima.h>
+ #include <generated/utsrelease.h>
+ 
++#ifdef CONFIG_IMA_RTMR
++#include <asm/tdx.h>
++#endif
+ #include "ima.h"
+ 
+ /* name for boot aggregate entry */
+@@ -152,6 +155,9 @@ int __init ima_init(void)
+ 	if (rc != 0)
+ 		return rc;
+ 
++#ifdef CONFIG_IMA_RTMR
++	tdx_ima_rtmr_init(ima_hash_algo);
++#endif
+ 	rc = ima_add_boot_aggregate();	/* boot aggregate must be first entry */
+ 	if (rc != 0)
+ 		return rc;
+diff --git a/security/integrity/ima/ima_queue.c b/security/integrity/ima/ima_queue.c
+index 0f1b7e4..27e4f0f 100644
+--- a/security/integrity/ima/ima_queue.c
++++ b/security/integrity/ima/ima_queue.c
+@@ -18,6 +18,9 @@
+ #include <linux/rculist.h>
+ #include <linux/reboot.h>
+ #include <linux/slab.h>
++#ifdef CONFIG_IMA_RTMR
++#include <asm/tdx.h>
++#endif
+ #include "ima.h"
+ 
+ #define AUDIT_CAUSE_LEN_MAX 32
+@@ -281,6 +284,10 @@ int ima_add_template_entry(struct ima_template_entry *entry, int violation,
+ 	if (violation)		/* invalidate pcr */
+ 		digests_arg = digests;
+ 
++#ifdef CONFIG_IMA_RTMR
++	/* Same ordered append and violation decision as the TPM path. */
++	tdx_ima_rtmr_extend(digest, violation);
++#endif
+ 	tpmresult = ima_pcr_extend(digests_arg, entry->pcr);
+ 	if (tpmresult != 0) {
+ 		snprintf(tpm_audit_cause, AUDIT_CAUSE_LEN_MAX, "TPM_error(%d)",
