@@ -1,5 +1,0 @@
-{
- "pccs_url": "https://api.trustedservices.intel.com/sgx/certification/v4/",
- "collateral_service": "https://api.trustedservices.intel.com/sgx/certification/v4/",
- "use_secure_cert": true
-}
