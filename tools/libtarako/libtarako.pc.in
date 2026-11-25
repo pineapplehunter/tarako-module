@@ -1,0 +1,11 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=@CMAKE_INSTALL_FULL_LIBDIR@
+includedir=@CMAKE_INSTALL_FULL_INCLUDEDIR@/tarako
+
+Name: libtarako
+Description: TARAKO quote and TLS evidence library
+Version: @PROJECT_VERSION@
+Requires: openssl libcurl json-c
+Libs: -L${libdir} -ltarako
+Libs.private: -pthread
+Cflags: -I${includedir}

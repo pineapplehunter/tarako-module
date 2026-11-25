@@ -1,6 +1,9 @@
-{ pkgs }:
+{
+  pkgs,
+  tdx-verify,
+  tdxAttestSource,
+}:
 let
-  tdx-verify = pkgs.callPackage ../../tdx/verify.nix { };
   # Standalone replay oracle for these fixtures, not the guest kernel backend.
   imaRtmrSrc = pkgs.fetchFromGitHub {
     owner = "acompany-develop";
@@ -12,11 +15,14 @@ let
 in
 pkgs.runCommand "platform-evidence-tests"
   {
-    nativeBuildInputs = [ suite tdx-verify ];
+    nativeBuildInputs = [
+      suite
+      tdx-verify
+    ];
     TDX_VERIFY_TESTDATA = "${tdx-verify.src}/testing/testdata";
     IMA_RTMR_VALIDATE = "${imaRtmrSrc}/validate.py";
-    TDX_ATTEST = ../tdx-attest.py;
-    IMA_TEST_FIXTURES = ./fixtures;
+    TDX_ATTEST = tdxAttestSource;
+    IMA_TEST_FIXTURES = ./assets;
   }
   ''
     test-platform-evidence -v

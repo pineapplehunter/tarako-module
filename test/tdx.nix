@@ -34,10 +34,6 @@
             --prefix PATH : ${lib.makeBinPath [ tdx-verify ]}
         '';
       };
-      quote-bench = pkgs.writers.writePython3Bin "quote-bench" { } ./quote-bench.py;
-      bench-tdx-quote = pkgs.writeShellScriptBin "bench-tdx-quote" ''
-        exec ${quote-bench}/bin/quote-bench tdx "$@"
-      '';
     in
     {
       imports = [
@@ -46,7 +42,6 @@
       ];
 
       environment.systemPackages = [
-        bench-tdx-quote
         tdx-attest
         tdx-verify
       ];

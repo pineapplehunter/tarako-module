@@ -13,7 +13,7 @@ import unittest
 
 ATTEST = runpy.run_path(os.environ["TDX_ATTEST"])
 REPLAY = runpy.run_path(os.environ["IMA_RTMR_VALIDATE"])
-FIXTURES = Path(os.environ.get("IMA_TEST_FIXTURES", Path(__file__).resolve().parent / "fixtures"))
+FIXTURES = Path(os.environ.get("IMA_TEST_FIXTURES", Path(__file__).resolve().parent / "assets"))
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text())
 
 
@@ -34,6 +34,18 @@ class QuoteTests(unittest.TestCase):
         wrong = bytes([self.report_data[0] ^ 1]) + self.report_data[1:]
         with self.assertRaisesRegex(SystemExit, "quote field REPORT_DATA"):
             ATTEST["verify_quote"](self.quote, wrong)
+
+    def test_tampered_body_and_signature(self):
+        for offset in (568, 636):
+            quote = bytearray(self.quote)
+            quote[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaises(SystemExit):
+                ATTEST["verify_quote"](bytes(quote), self.report_data)
+
+    def test_empty_or_truncated_quote(self):
+        for quote in (b"", self.quote[:1024]):
+            with self.subTest(size=len(quote)), self.assertRaises(SystemExit):
+                ATTEST["verify_quote"](quote, self.report_data)
 
 
 def replay_end(log, target):

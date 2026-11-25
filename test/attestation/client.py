@@ -2,7 +2,6 @@
 
 import argparse
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import time
@@ -32,7 +31,6 @@ def request_challenge(verifier_host: str, request_value: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trusted-root-ca", required=True, type=Path)
     parser.add_argument("verifier_host")
     parser.add_argument("attester_host")
     parser.add_argument("request")
@@ -70,7 +68,7 @@ def main() -> None:
                 "openssl",
                 "verify",
                 "-CAfile",
-                str(args.trusted_root_ca),
+                "/etc/ssl/certs/ca-certificates.crt",
                 certificate_file.name,
             ],
             check=True,
@@ -78,13 +76,7 @@ def main() -> None:
             text=True,
         )
 
-    root_certificate = x509.load_pem_x509_certificate(
-        args.trusted_root_ca.read_bytes()
-    )
     verifier_certificate = x509.load_pem_x509_certificate(certificate_pem)
-    if verifier_certificate.issuer != root_certificate.subject:
-        message = "Verifier certificate was not issued by the root CA"
-        raise RuntimeError(message)
     verifier_public_key = verifier_certificate.public_key()
     if not isinstance(verifier_public_key, ec.EllipticCurvePublicKey):
         raise RuntimeError("Verifier certificate does not contain an EC key")

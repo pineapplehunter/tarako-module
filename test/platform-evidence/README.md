@@ -4,6 +4,7 @@
 verification path check go-tdx-guest's signed `tdx_prod_quote_SPR_E4.dat`
 fixture. The expected REPORTDATA is fixed to the quote v4 body bytes 568–631.
 Changing only the caller's expectation must fail specifically on REPORTDATA.
+Tampered quote bodies and signatures, and empty or truncated quotes, are rejected.
 Verification is offline: signatures and the Intel-rooted certificate chain are
 checked, but online QE identity, TCB appraisal and revocation are not.
 
@@ -23,7 +24,7 @@ replay function, not the sysfs-reading CLI.
 The synthetic logs use a nonzero baseline, one skipped entry, one violation,
 and one `ima-buf` event. `generate-fixtures.py` independently computes the
 serialized template digests and golden RTMRs with OpenSSL. Regenerate with
-`nix run .#generate-platform-fixtures -- test/platform-evidence/fixtures`.
+`nix run .#generate-platform-fixtures -- test/platform-evidence/assets`.
 The test-only policy checks that the matching replay slice contains an
 `ima-buf` `public-key-generate` record that binds the exact expected Tarako
 Attestation Key (TAK) bytes through its buffer and template digests. An
@@ -38,24 +39,8 @@ baseline, skip count, asynchronous ordering and failure state), real driver
 TAK measurement, and replay of a same-guest, same-snapshot log against the
 RTMR2 authenticated by a fresh quote. This is not the four-VM test.
 
-## Run and integrate
-
-From the repository root, build standalone using the existing flake's pinned
-nixpkgs, without editing `flake.nix`:
+## Run
 
 ```sh
-nix build --no-link --impure --expr '
-  let
-    root = builtins.toPath (builtins.getEnv "PWD");
-    flake = builtins.getFlake ("path:" + root);
-    pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
-  in pkgs.callPackage (root + "/test/platform-evidence") { }
-'
-```
-
-To wire it into `nix flake check` later, add this in `perSystem` alongside
-`checks.quote-tools` and ensure the new files are tracked by Git:
-
-```nix
-checks.platform-evidence = pkgs.callPackage ./test/platform-evidence { };
+nix build --no-link .#checks.x86_64-linux.platform-evidence
 ```

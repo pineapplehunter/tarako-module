@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-TARAKO_APP = Path("/var/lib/tarako/tarako-attester")
+TARAKO_APP = Path("/var/lib/tarako/tarako-simple-attester")
 
 
 def run(*command: str) -> None:
@@ -39,9 +39,9 @@ def prepare_app() -> None:
     if use_existing_app():
         return
 
-    source = shutil.which("tarako-attester")
+    source = shutil.which("tarako-simple-attester")
     if source is None:
-        raise SystemExit("tarako-attester is not available in PATH")
+        raise SystemExit("tarako-simple-attester is not available in PATH")
 
     TARAKO_APP.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, TARAKO_APP)
@@ -93,7 +93,7 @@ def main() -> None:
             for line in app_output.splitlines()
             if line.startswith("sign ioctl:")
         ),
-        "sign ioctl: unavailable in the installed tarako-attester",
+        "sign ioctl: unavailable in the installed tarako-simple-attester",
     )
 
     print(f"nonce: {nonce.hex()}")

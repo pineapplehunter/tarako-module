@@ -17,7 +17,7 @@ TARAKO allows an external client to verify the integrity of a userspace applicat
 
 It is intended to be used in combination with remote attestation of the confidential VM itself.
 
-The separate [early TLS attestation PoC](tls-attester/README.md) binds a TARAKO quote and mock platform evidence to a TLS 1.3 handshake.
+The separate [early TLS attestation PoC](tools/tls-attester/README.md) binds a TARAKO quote and mock platform evidence to a TLS 1.3 handshake.
 
 ## Required facilities
 
@@ -68,51 +68,37 @@ sequenceDiagram
 **Attester** (runs the kernel module):
 1. Loads the `tarako` module — an ECDSA P-256 key pair is generated in kernel space.
 2. The private key never leaves the kernel and is zeroized on module unload.
-3. The fs-verity-protected Go Attester webserver accepts a request from the Client and a nonce from the Verifier, calls `TARAKO_SIGN_DATA` directly, and returns Tarako Quote Evidence to the Client.
+3. The fs-verity-protected C simple attester accepts a request from the Client and a nonce from the Verifier, calls `TARAKO_SIGN_DATA` directly, and returns Tarako Quote Evidence to the Client.
 
 ## Build & Test
+
+The flake supports `x86_64-linux` only.
 
 ```sh
 # Kernel module
 nix build .#default
 
-# Go attester (HTTP server and command-line quote generation)
-nix build .#attester
+# C attester (HTTP server and command-line quote generation)
+nix build .#simple-attester
+
+# TLS server, TLS client, and shared evidence code
+nix build .#tls-attester .#tls-client .#libtarako
 
 # NixOS VM attestation test
 nix flake check
-
-# Build (but do not run) the TDX test driver and its TDVF firmware for an Intel TDX-capable host
-nix build .#tdx-test-driver
 ```
 
-The Go attester runs an HTTP server by default. Its `tarako-attester quote [hex-user-data]` command generates a quote directly; without user data, it generates a fresh random 32-byte nonce. Signing requires running an fs-verity-protected copy of the binary.
+The [simple attester](tools/simple-attester/) serves `POST /quote` by default. Its `tarako-simple-attester quote [hex-user-data]` command generates a quote directly; without user data, it generates a fresh random 32-byte nonce. Signing requires running an fs-verity-protected copy of the binary.
+
+The demo tools share [`tools/libtarako`](tools/libtarako/).
+The attesters are statically linked so their fs-verity digests cover the library
+code and dependencies. The TLS client links its system libraries dynamically.
+To use the TARAKO packages in another flake, add `tarako.overlays.default`
+to that flake’s nixpkgs overlays.
 
 ### Running the test on TDX
 
-Build the driver and firmware without running the VM in the Nix build sandbox, then execute the driver on the TDX host:
-
-```sh
-nix build .#tdx-test-driver
-./result/bin/nixos-test-driver
-```
-
-The TDX attester defaults to pinned vendor QEMU and source-built TDVF for the
-experiment's `6.8.0-1028-intel` host kernel.
-
-> **Intended host environment:** The added `tdx-qemu` package targets Ubuntu
-> 24.04.4 LTS (Noble), x86_64, with the vendor Intel kernel shown below. It is
-> not intended as a general-purpose QEMU replacement for other TDX host stacks.
-> The hostname has been anonymized.
-
-```text
-Linux <tdx-host> 6.8.0-1028-intel #35-Ubuntu SMP PREEMPT_DYNAMIC Fri May 23 17:34:54 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
-No LSB modules are available.
-Distributor ID: Ubuntu
-Description:    Ubuntu 24.04.4 LTS
-Release:        24.04
-Codename:       noble
-```
+See the [live TDX runbook](live-tdx/README.md) for running the HTTP/2 attestation test on an Intel TDX host.
 
 ## How the signing works
 

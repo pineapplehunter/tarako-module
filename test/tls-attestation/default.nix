@@ -1,7 +1,5 @@
 { lib, ... }:
 let
-  tlsPackage = pkgs: pkgs.callPackage ../../tls-attester/package.nix { };
-  mockPackage = pkgs: pkgs.callPackage ./package.nix { };
   state = "/run/tls-attestation";
   measured = "/mnt/tls-attestation";
   # Tests provision keys and policy first, then start these units explicitly.
@@ -18,11 +16,13 @@ in
 
   nodes = {
     attester =
-      { config, pkgs, ... }:
+      { pkgs, ... }:
       {
         boot.kernelPackages = pkgs.linuxPackages_latest;
-        boot.extraModulePackages = [ (config.boot.kernelPackages.callPackage ../../driver/package.nix { }) ];
-        boot.kernelModules = [ "tarako" "loop" ];
+        boot.kernelModules = [
+          "tarako"
+          "loop"
+        ];
         boot.kernelParams = [ "ima_policy=critical_data" ];
         virtualisation = {
           useEFIBoot = true;
@@ -32,7 +32,7 @@ in
           };
         };
         environment.systemPackages = [
-          (tlsPackage pkgs)
+          pkgs.tls-attester
           pkgs.e2fsprogs
           pkgs.fsverity-utils
           pkgs.openssl
@@ -40,42 +40,65 @@ in
         ];
         networking.firewall.allowedTCPPorts = [ 8443 ];
         systemd.services."tls-attester@" = service [
-          "${measured}/tarako-tls-attester" "0.0.0.0:8443"
-          "${state}/%i.pem" "${state}/%i.key" "http://mock:5101/quote"
+          "${measured}/tarako-tls-attester"
+          "0.0.0.0:8443"
+          "${state}/%i.pem"
+          "${state}/%i.key"
+          "http://mock:5101/quote"
         ];
         systemd.services."tls-attester-fault@" = service [
-          "${measured}/tarako-tls-attester-test" "0.0.0.0:8443"
-          "${state}/server.pem" "${state}/server.key" "http://mock:5101/quote" "%i"
+          "${measured}/tarako-tls-attester-test"
+          "0.0.0.0:8443"
+          "${state}/server.pem"
+          "${state}/server.key"
+          "http://mock:5101/quote"
+          "%i"
         ];
       };
     client =
       { pkgs, ... }:
       {
-        environment.systemPackages = [ (tlsPackage pkgs) pkgs.openssl ];
+        environment.systemPackages = [
+          pkgs.tls-client
+          pkgs.openssl
+        ];
       };
     mock =
       { pkgs, ... }:
       {
-        environment.systemPackages = [ pkgs.openssl pkgs.xxd ];
+        environment.systemPackages = [
+          pkgs.openssl
+          pkgs.xxd
+        ];
         networking.firewall.allowedTCPPorts = [ 5101 ];
         systemd.services.mock-quote = service [
-          "${lib.getExe' (mockPackage pkgs) "tarako-mock-platform-signer"}"
-          "--signing-key" "${state}/signing.key"
-          "--signing-cert" "${state}/signing-cert.pem"
-          "--tak-file" "${state}/tak.bin"
+          "${lib.getExe' pkgs.tls-mock-services "tarako-mock-platform-signer"}"
+          "--signing-key"
+          "${state}/signing.key"
+          "--signing-cert"
+          "${state}/signing-cert.pem"
+          "--tak-file"
+          "${state}/tak.bin"
         ];
       };
     verifier =
       { pkgs, ... }:
       {
-        environment.systemPackages = [ pkgs.openssl pkgs.xxd ];
+        environment.systemPackages = [
+          pkgs.openssl
+          pkgs.xxd
+        ];
         networking.firewall.allowedTCPPorts = [ 5102 ];
         systemd.services.quote-verifier = service [
-          "${lib.getExe' (mockPackage pkgs) "tarako-tls-verifier"}"
-          "--signing-key" "${state}/signing.key"
-          "--tak-file" "${state}/tak.bin"
-          "--platform-ca" "${state}/platform-ca.pem"
-          "--digest-file" "${state}/digest"
+          "${lib.getExe' pkgs.tls-mock-services "tarako-tls-verifier"}"
+          "--signing-key"
+          "${state}/signing.key"
+          "--tak-file"
+          "${state}/tak.bin"
+          "--platform-ca"
+          "${state}/platform-ca.pem"
+          "--digest-file"
+          "${state}/digest"
         ];
       };
   };
@@ -87,6 +110,8 @@ in
     from itertools import product
     from shlex import quote
     from struct import pack
+
+    start_all()
 
     STATE = "/run/tls-attestation"
     MEASURED = "/mnt/tls-attestation"
@@ -146,7 +171,7 @@ in
             f"http://verifier:5102/verify {STATE}/verifier-public.pem 2>&1"
         )
         if rejection is None:
-            assert status == 0 and "200 OK" in output and "Tarako OK" in output, output
+            assert status == 0 and output == "Tarako OK", output
             assert request_count(unit) == before + 1, output
         else:
             assert request_count(unit) == before, output
@@ -155,7 +180,6 @@ in
                 assert rejection in output, output
 
 
-    start_all()
     for machine in (attester, client, verifier, mock):
         machine.wait_for_unit("multi-user.target")
         machine.succeed(f"install -d -m 0700 {STATE}")
@@ -257,14 +281,14 @@ in
     rotated = "tls-attester@rotated"
     start_verifier(normal)
     start_service(attester, baseline, 8443)
-    with subtest("normal attester succeeds"):
+    with subtest("attested HTTP/2 succeeds"):
         check_request(baseline)
-    with subtest("ordinary TLS client cannot reach HTTP"):
+    with subtest("offering h2 alone cannot skip attestation"):
         before = request_count(baseline)
         status, output = client.execute(
             f"timeout 20s openssl s_client -connect attester:8443 -servername localhost "
             f"-verify_hostname localhost -verify_return_error -CAfile {STATE}/ca.pem "
-            "-tls1_3 -ciphersuites TLS_AES_128_GCM_SHA256 </dev/null 2>&1"
+            "-tls1_3 -alpn h2 -ciphersuites TLS_AES_128_GCM_SHA256 </dev/null 2>&1"
         )
         assert status == 1 and "no peer certificate available" in output, (status, output)
         log = server_log(baseline)

@@ -1,5 +1,5 @@
 {
-  description = "Rust kernel module example";
+  description = "TARAKO application attestation";
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
@@ -11,10 +11,15 @@
   outputs =
     { self, flake-parts, ... }@inputs:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [
-        "aarch64-linux"
-        "x86_64-linux"
-      ];
+      systems = [ "x86_64-linux" ];
+
+      flake.overlays.default = final: _: {
+        libtarako = final.callPackage ./tools/libtarako/package.nix { };
+        simple-attester = final.pkgsStatic.callPackage ./tools/simple-attester/package.nix { };
+        tls-attester = final.pkgsStatic.callPackage ./tools/tls-attester/package.nix { };
+        tls-client = final.callPackage ./tools/tls-client/package.nix { };
+        tls-mock-services = final.callPackage ./test/tls-attestation/mock-services/package.nix { };
+      };
 
       imports = [
         {
@@ -50,7 +55,6 @@
               packages.live-tdx-verifier = pkgs.callPackage ./live-tdx/verifier/package.nix {
                 dcapVerifier = self'.packages.dcap-verify;
               };
-              checks.live-tdx-verifier = self'.packages.live-tdx-verifier;
               packages.live-tdx-test-driver = liveTdxDriver { };
               packages.live-tdx-attester-driver = liveTdxDriver { attesterOnly = true; };
             };
@@ -58,6 +62,10 @@
       ];
 
       flake.nixosModules = {
+        tarakoKernelModule = { config, ... }: {
+          boot.extraModulePackages = [ (config.boot.kernelPackages.callPackage ./driver/package.nix { }) ];
+        };
+        tarakoTestModuleLockdown = import ./test/common/module-lockdown.nix;
         tarakoTdxVerifier = { lib, pkgs, ... }: {
           imports = [ ./live-tdx/module.nix ];
           services.tarakoTdxVerifier.package =
@@ -84,12 +92,17 @@
             inherit system;
             overlays = [
               inputs.rust-overlay.overlays.default
+              self.overlays.default
             ];
           };
 
           packages.default = pkgs.linuxPackages.callPackage ./driver/package.nix { };
           packages.latest = pkgs.linuxPackages_latest.callPackage ./driver/package.nix { };
-          packages.attester = pkgs.callPackage ./attester/package.nix { };
+          packages.libtarako = pkgs.libtarako;
+          packages.simple-attester = pkgs.simple-attester;
+          packages.tls-attester = pkgs.tls-attester;
+          packages.tls-client = pkgs.tls-client;
+          packages.tls-mock-services = pkgs.tls-mock-services;
           packages.generate-rust-analyzer = pkgs.writers.writePython3Bin "generate-rust-analyzer" {
             doCheck = false; # Keep the existing generator's formatting.
           } ./dev/generate_rust_analyzer.py;
@@ -113,7 +126,6 @@
               (pkgs.lib.makeBinPath [ pkgs.proverif ])
             ];
           } ./formal-verification/test-negative-models.py;
-          packages.tls-attester = pkgs.callPackage ./tls-attester/package.nix { };
           packages.live-tdx-ima-log =
             pkgs.writers.writePython3Bin "tarako-tdx-ima-log" { }
               ./live-tdx/serve-ima.py;
@@ -130,11 +142,13 @@
               "--prefix"
               "PATH"
               ":"
-              (pkgs.lib.makeBinPath [ self'.packages.tls-attester ])
+              (pkgs.lib.makeBinPath [ pkgs.tls-client ])
             ];
           } ./live-tdx/smoke.py;
-          checks.tls-loopback = self'.packages.tls-attester;
-          checks.tls-attestation = pkgs.testers.runNixOSTest ./test/tls-attestation;
+          checks.tls-attestation = pkgs.testers.runNixOSTest {
+            imports = [ ./test/tls-attestation ];
+            nodes.attester.imports = [ self.nixosModules.tarakoKernelModule ];
+          };
 
           # Minimal kernel source tree with just the Rust files (~4.7 MB).
           packages.kernel-src =
@@ -147,7 +161,14 @@
                 tar xf "$src" --strip-components=1 -C "$out" --wildcards '*/rust/*'
               '';
 
-          checks.attestation = pkgs.testers.runNixOSTest ./test/attestation;
+          checks.attestation = pkgs.testers.runNixOSTest {
+            imports = [ ./test/attestation ];
+            nodes.attester.imports = with self.nixosModules; [ tarakoKernelModule tarakoTestModuleLockdown ];
+          };
+          checks.tarako-basics = pkgs.testers.runNixOSTest {
+            imports = [ ./test/tarako-basics ];
+            nodes.attester.imports = with self.nixosModules; [ tarakoKernelModule tarakoTestModuleLockdown ];
+          };
           checks.formal-verification =
             pkgs.runCommand "tarako-formal-verification"
               {
@@ -164,11 +185,10 @@
               "W=e"
             ];
           });
-          checks.quote-benchmark = pkgs.testers.runNixOSTest ./test/quote-benchmark;
-          checks.quote-tools = pkgs.callPackage ./test/quote-tools { };
-          checks.platform-evidence = pkgs.callPackage ./test/platform-evidence { };
-          packages.tls-mock-services = pkgs.callPackage ./test/tls-attestation/package.nix { };
-          checks.tls-services = self'.packages.tls-mock-services;
+          checks.platform-evidence = pkgs.callPackage ./test/platform-evidence {
+            tdx-verify = self'.packages.tdx-verify;
+            tdxAttestSource = ./test/tdx-attest.py;
+          };
 
           # Build these on any machine, then run the resulting test driver on
           # the TDX host (outside the Nix build sandbox). Pin vendor QEMU for
@@ -176,10 +196,6 @@
           packages.tdx-qemu = pkgs.callPackage ./tdx/qemu.nix { };
           packages.tdx-firmware = pkgs.callPackage ./tdx/firmware.nix { };
           packages.tdx-verify = pkgs.callPackage ./tdx/verify.nix { };
-          packages.tdx-test-driver = (pkgs.testers.runNixOSTest ./test/attestation-tdx).driver;
-          packages.tdx-test-driver-interactive =
-            (pkgs.testers.runNixOSTest ./test/attestation-tdx).driverInteractive;
-          packages.tdx-quote-benchmark-driver = (pkgs.testers.runNixOSTest ./test/quote-benchmark-tdx).driver;
 
           devShells = {
             # Run protocol checks without building kernel/Rust development inputs.

@@ -10,7 +10,7 @@ User these commands for common tasks.
 
 ```sh
 nix build .#default # the TARAKO kernel module
-nix build .#attester # Go Attester webserver
+nix build .#simple-attester # HTTP and CLI quote generation
 nix flake check # build test packages and nixos tests
 nix fmt # format the nix files
 make -C driver # build module against running kernel (outside nix)
@@ -19,7 +19,7 @@ make -C driver # build module against running kernel (outside nix)
 ## Architecture
 
 - **`driver/src/`**: Rust kernel module
-- **`attester/`**: single-binary Go webserver to test attestation.
+- **`tools/`**: simple attester, TLS attester and client, and their shared `libtarako` code.
 - **`test/`**: NixOS test definitions and driver definitions to run in a TDX machine.
 
 Ioctls:

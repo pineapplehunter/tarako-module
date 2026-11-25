@@ -29,6 +29,7 @@ def make_request_binding(request_value: str, nonce: bytes) -> bytes:
         {"nonce": nonce.hex(), "request": request_value},
         sort_keys=True,
         separators=(",", ":"),
+        ensure_ascii=False,
     ).encode()
     return hashlib.sha256(DOMAIN + context).digest()
 
