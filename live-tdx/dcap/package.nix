@@ -6,7 +6,6 @@
   autoPatchelfHook,
   openssl,
   curl,
-  enableTestOverride ? false,
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "tarako-dcap-verify";
@@ -48,7 +47,6 @@ stdenv.mkDerivation (finalAttrs: {
     $CC -std=c11 -Wall -Wextra -Werror -O2 \
       -isystem extracted/usr/include \
       -DQPL_PATH=\"$out/lib/libdcap_quoteprov.so.1\" \
-      ${lib.optionalString enableTestOverride "-DTARAKO_DCAP_TEST_OVERRIDE"} \
       ${./verify.c} -L"$out/lib" -Wl,-rpath,"$out/lib" \
       -lsgx_dcap_quoteverify -o "$out/bin/tarako-dcap-verify"
     runHook postInstall

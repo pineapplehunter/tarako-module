@@ -149,32 +149,37 @@ int main(int argc, char **argv)
         return VERIFY;
     }
 
+    sgx_ql_qv_supplemental_t supplemental = {0};
+    tee_supp_data_descriptor_t descriptor = { .p_data = (uint8_t *)&supplemental };
+    status = tee_get_supplemental_data_version_and_size(quote, (uint32_t)len,
+                                                        NULL, &descriptor.data_size);
+    int have_supplemental = status == SGX_QL_SUCCESS &&
+                            descriptor.data_size == sizeof(supplemental);
+
     uint32_t expired = 1;
     sgx_ql_qv_result_t result = SGX_QL_QV_RESULT_UNSPECIFIED;
     /* NULL collateral lets Intel QPL fetch it via operator QCNL settings.
      * NULL report info requests software QVL, not an SGX enclave.
      */
     status = tee_verify_quote(quote, (uint32_t)len, NULL, now, &expired,
-                              &result, NULL, NULL);
+                              &result, NULL, have_supplemental ? &descriptor : NULL);
     if (status != SGX_QL_SUCCESS) {
         fprintf(stderr, "tarako-dcap-verify: DCAP verification failed (0x%x)\n",
                 (unsigned)status);
         return collateral_error(status) ? COLLATERAL : VERIFY;
     }
-    int acceptable = result == SGX_QL_QV_RESULT_OK;
-#ifdef TARAKO_DCAP_TEST_OVERRIDE
-    /* TODO: Remove this lab-only exception once the TDX host returns QVL OK.
-     * A run with this exception is not a strict TCB attestation pass.
-     */
-    if (expired == 0 && result == SGX_QL_QV_RESULT_OUT_OF_DATE) {
-        fputs("tarako-dcap-verify: TEST ONLY: allowing OUT_OF_DATE TCB; "
-              "rerun the strict driver after updating the host\n", stderr);
-        acceptable = 1;
-    }
-#endif
-    if (expired != 0 || !acceptable) {
+    if (expired != 0 || result != SGX_QL_QV_RESULT_OK) {
         fprintf(stderr, "tarako-dcap-verify: collateral status %u, QV result 0x%x\n",
                 (unsigned)expired, (unsigned)result);
+        if (have_supplemental) {
+            fprintf(stderr, "tarako-dcap-verify: TCB evaluation data number %u, "
+                    "PCK PCE SVN %u, advisories: %.*s\n",
+                    supplemental.tcb_eval_ref_num, (unsigned)supplemental.tcb_pce_isvsvn,
+                    (int)sizeof(supplemental.sa_list),
+                    supplemental.sa_list[0] ? supplemental.sa_list : "none reported");
+        } else {
+            fputs("tarako-dcap-verify: supplemental TCB data unavailable\n", stderr);
+        }
         return expired != 0 ? COLLATERAL : POLICY;
     }
 

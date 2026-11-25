@@ -30,21 +30,6 @@ uses Intel PCS by default; set `TARAKO_TDX_QCNL_CONFIG` to the absolute path of
 an operator-supplied QCNL JSON file to use a different collateral source.
 The existing `TARAKO_TDX_QEMU` and `TARAKO_TDX_FIRMWARE` overrides also apply.
 
-To exercise the rest of the pipeline on a lab host rated `OUT_OF_DATE` by
-Intel DCAP, explicitly select the lab-only driver:
-
-```sh
-TARAKO_TDX_POLICY=./reviewed.json nix run .#live-tdx-test-driver-lab-allow-out-of-date
-```
-
-This accepts only that non-OK result and still requires unexpired collateral,
-successful DCAP verification, and all remaining checks. No environment
-variable enables this exception in the normal verifier or test driver.
-
-**Restore strict checking after testing.** After updating the TDX host, rerun
-with `live-tdx-test-driver` (no lab suffix). Do not count a lab run as a strict
-TCB pass.
-
 ## Boot only the attester for external testing
 
 This two-machine setup runs just the attester VM on the TDX host and runs
@@ -97,19 +82,16 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
    ```
 
 3. In the same terminal, configure Intel PCS and start the verifier on
-   loopback. Use the explicitly named lab package only while the host reports
-   `OUT_OF_DATE`:
+   loopback:
 
    ```sh
    QCNL_CONF_PATH="$PWD/live-tdx/intel-pcs.json" \
-     nix run .#live-tdx-verifier-lab-allow-out-of-date -- \
+     nix run .#live-tdx-verifier -- \
        --listen 127.0.0.1 --port 5102 \
        --policy "$lab/reviewed.json" --signing-key "$lab/verifier.key"
    ```
 
-   Leave it running. **After updating the TDX host, use `live-tdx-verifier`
-   instead to restore strict checking.** If you use a PCCS, use your own QCNL
-   config with TLS validation enabled.
+   Leave it running. If you use a PCCS, use your own QCNL config with TLS validation enabled.
 
 4. In a second terminal on the client machine, open the tunnel to the TDX
    host. No SSH to the guest or to a separate verifier VM is needed:
@@ -133,7 +115,7 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
      --ima-log-url http://127.0.0.1:8080/ima.log https://127.0.0.1:8443/
    ```
 
-   Expect `Tarako OK` on stdout. The lab exception is not a strict TCB pass.
+   Expect `Tarako OK` on stdout.
 
 ## Manual split-host setup
 

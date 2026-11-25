@@ -15,14 +15,10 @@ let
   qcnlDefault = ../../live-tdx/intel-pcs.json;
 in
 {
-  name =
-    "tarako-live-tdx"
-    + lib.optionalString attesterOnly "-attester"
-    + lib.optionalString config.tarakoTestAllowOutOfDate "-lab-allow-out-of-date";
+  name = "tarako-live-tdx" + lib.optionalString attesterOnly "-attester";
   imports = [
     ../tdx.nix
     {
-      options.tarakoTestAllowOutOfDate = lib.mkEnableOption "the lab-only OUT_OF_DATE TCB exception";
       options.tarakoAttesterOnly = lib.mkEnableOption "serving the attester without a verifier VM";
     }
   ];
@@ -275,12 +271,6 @@ in
                   verifier.wait_for_open_port(port, timeout=timeout)
 
           def main():
-              print("${
-                if config.tarakoTestAllowOutOfDate then
-                  "TEST ONLY: allowing DCAP OUT_OF_DATE with unexpired collateral"
-                else
-                  "Strict TCB checking is active"
-              }", flush=True)
               candidate_path = os.environ.get("TARAKO_TDX_WRITE_CANDIDATE")
               policy_path = os.environ.get("TARAKO_TDX_POLICY")
               if bool(candidate_path) == bool(policy_path):
