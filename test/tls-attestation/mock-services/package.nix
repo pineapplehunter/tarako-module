@@ -14,4 +14,5 @@ python3Packages.buildPythonApplication {
 
   build-system = [ python3Packages.setuptools ];
   dependencies = [ python3Packages.cryptography ];
+  meta.license = lib.licenses.gpl3Plus;
 }

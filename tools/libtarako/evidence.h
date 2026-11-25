@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef TARAKO_EVIDENCE_H
 #define TARAKO_EVIDENCE_H
 #include "early_tls.h"

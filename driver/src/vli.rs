@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 //
 // Variable-Length Integer type wrapping `[u64; N]` limbs for ECC arithmetic.
 

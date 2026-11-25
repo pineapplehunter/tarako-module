@@ -38,4 +38,5 @@ python3Packages.buildPythonApplication {
   '';
 
   meta.mainProgram = "tarako-tdx-verifier";
+  meta.license = lib.licenses.gpl3Plus;
 }

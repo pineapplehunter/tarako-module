@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef LIBTARAKO_H
 #define LIBTARAKO_H
 

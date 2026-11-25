@@ -1,4 +1,5 @@
 {
+  lib,
   stdenv,
   cmake,
   pkg-config,
@@ -12,4 +13,5 @@ stdenv.mkDerivation {
   nativeBuildInputs = [ cmake pkg-config ];
   buildInputs = [ libtarako libnghttp2 ];
   meta.mainProgram = "tarako-tls-client";
+  meta.license = lib.licenses.gpl3Plus;
 }

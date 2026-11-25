@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef TARAKO_EARLY_TLS_H
 #define TARAKO_EARLY_TLS_H
 

@@ -103,6 +103,15 @@ See the [real-hardware TDX runbook](real-hardware/README.md) for running the HTT
 The TDX runner uses upstream QEMU from nixpkgs and source-built TDVF. The target
 host is Ubuntu 26.04 LTS with Intel TDX enabled.
 
+## License
+
+TARAKO's project-owned code is licensed under the GNU General Public License,
+version 3 or later ([GPL-3.0-or-later](LICENSE)), except for the Linux kernel code.
+The kernel module in [`driver/`](driver/) and the Linux kernel patches in
+[`real-hardware/guest/`](real-hardware/guest/) are GPL-2.0-only; see
+[`driver/LICENSE`](driver/LICENSE). Third-party code and dependencies retain
+their own licenses.
+
 ## How the signing works
 
 1. On load, the module generates an ECDSA P-256 key pair. The curve order `n` is cached.

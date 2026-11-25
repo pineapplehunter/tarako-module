@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 use core::ffi::{c_char, c_int, c_uint, c_ulong};
 
 #[repr(C)]

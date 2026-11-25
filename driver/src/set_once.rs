@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 use kernel::sync::atomic::{
     ordering::{Acquire, Relaxed, Release},

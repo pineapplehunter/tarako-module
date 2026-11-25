@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #include "evidence.h"
 
 #include <arpa/inet.h>

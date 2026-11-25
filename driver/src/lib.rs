@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 //! A kernel module for remote attestation using ECDSA P-256 signatures.
 //!
 //! # Security model

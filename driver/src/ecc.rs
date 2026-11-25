@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 // Safe wrappers around kernel-internal ECC / crypto helpers.
 //
 // All vli / ecc functions use LE-limb format (native u64 on x86_64).

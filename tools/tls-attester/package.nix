@@ -1,4 +1,5 @@
 {
+  lib,
   stdenv,
   cmake,
   pkg-config,
@@ -20,4 +21,5 @@ stdenv.mkDerivation {
     fi
   '';
   meta.mainProgram = "tarako-tls-attester";
+  meta.license = lib.licenses.gpl3Plus;
 }

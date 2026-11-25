@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-
 // ioctl commands, global key-pair storage, ECDSA signing, key generation,
 // and fs-verity helpers.
 

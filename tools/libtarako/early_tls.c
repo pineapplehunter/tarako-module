@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #include "early_tls.h"
 
 #include <openssl/kdf.h>

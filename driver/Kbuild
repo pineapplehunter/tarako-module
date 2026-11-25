@@ -1,4 +1,2 @@
-# SPDX-License-Identifier: GPL-2.0
-
 obj-m := tarako.o
 tarako-y := src/lib.o
