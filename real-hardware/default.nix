@@ -5,7 +5,6 @@ in
 {
   flake.nixosModules = {
     tarakoImaRtmr = import ./guest/ima-rtmr-kernel.nix;
-    tarakoTestQuoteTools = import ./guest/quote-tools.nix;
     tarakoTdxVerifier = { lib, pkgs, ... }: {
       imports = [ ./verifier/module.nix ];
       services.tarakoTdxVerifier.package =
@@ -34,7 +33,6 @@ in
           nodes.attester.imports = with nixosModules; [
             tarakoKernelModule
             tarakoImaRtmr
-            tarakoTestQuoteTools
           ];
         };
       realHardwareDriver =

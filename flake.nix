@@ -38,14 +38,6 @@
           generate-rust-analyzer = finale.writers.writePython3Bin "generate-rust-analyzer" {
             doCheck = false; # Keep the existing generator's formatting.
           } ./dev/generate_rust_analyzer.py;
-          generate-platform-fixtures = finale.writers.writePython3Bin "generate-platform-fixtures" {
-            makeWrapperArgs = [
-              "--prefix"
-              "PATH"
-              ":"
-              (prev.lib.makeBinPath [ finale.openssl ])
-            ];
-          } ./test/platform-evidence/generate-fixtures.py;
           verify-model = finale.writers.writePython3Bin "tarako-verify-model" {
             doCheck = false; # The check runs the model and every negative case.
             makeWrapperArgs = [
@@ -119,7 +111,6 @@
                   tls-mock-services
                   tdx-verify
                   generate-rust-analyzer
-                  generate-platform-fixtures
                   verify-model
                   kernel-src
                   ;

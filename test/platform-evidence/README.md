@@ -8,36 +8,10 @@ Tampered quote bodies and signatures, and empty or truncated quotes, are rejecte
 Verification is offline: signatures and the Intel-rooted certificate chain are
 checked, but online QE identity, TCB appraisal and revocation are not.
 
-**IMA:** At `ima-rtmr-extend` revision
-`33101a9db9fcf1a7172aaede8fd943817d836941`, `src/detect.c` selects
-`/sys/class/misc/tdx_guest/measurements/rtmr2:sha384` on TDX. `src/log.c`
-skips the entries already present at initialization and extends subsequent
-entries in log order. `src/extend.c` writes the SHA-384 bank template digest
-(not the event/buffer digest), substituting 48 `ff` bytes for an all-zero
-violation digest. The paired log in `validate.py` is
-`/sys/kernel/security/ima/ascii_runtime_measurements_sha384`, not the
-unsuffixed IMA log. Replay starts from the startup RTMR and applies
-`SHA384(previous_RTMR || template_digest)` from `skip_count`, stopping at the
-prefix that matches the target. The tests call the pinned upstream parser and
-replay function, not the sysfs-reading CLI.
-
-The synthetic logs use a nonzero baseline, one skipped entry, one violation,
-and one `ima-buf` event. `generate-fixtures.py` independently computes the
-serialized template digests and golden RTMRs with OpenSSL. Regenerate with
-`nix run .#generate-platform-fixtures -- test/platform-evidence/assets`.
-The test-only policy checks that the matching replay slice contains an
-`ima-buf` `public-key-generate` record that binds the exact expected Tarako
-Attestation Key (TAK) bytes through its buffer and template digests. An
-otherwise replay-valid log with a different key fails policy, as does a right
-key appended beyond the matched prefix.
-
-**Hardware boundary:** The synthetic RTMR targets are unsigned and unrelated
-to the signed quote. This suite does not establish quote-to-live-log binding.
-A TDX integration run must still exercise TDREPORT/quote generation through
-TSM/QGS, real SHA-384 bank log emission and RTMR2 extension (including startup
-baseline, skip count, asynchronous ordering and failure state), real driver
-TAK measurement, and replay of a same-guest, same-snapshot log against the
-RTMR2 authenticated by a fresh quote. This is not the four-VM test.
+IMA replay and key appraisal are tested directly in the [live verifier’s unit
+tests](../../real-hardware/verifier/test_verifier.py). The
+[real-hardware suite](../../real-hardware/README.md) supplies fresh same-guest
+quotes and IMA logs and checks their binding end to end.
 
 ## Run
 

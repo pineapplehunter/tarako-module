@@ -45,8 +45,7 @@ def main():
         else:
             passed = (result.returncode != 0 and not result.stdout
                       and expected in result.stderr
-                      and "* TLS handshake passed; sending GET"
-                      not in result.stderr)
+                      and "* TLS handshake passed;" not in result.stderr)
         if not passed:
             print(f"FAIL: {name}\n{result.stderr}", file=sys.stderr)
             raise SystemExit(1)

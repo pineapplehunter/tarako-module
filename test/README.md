@@ -5,7 +5,7 @@
 | `tarako-basics/` | Single-VM sanity checks for module lockdown, fs-verity signing, ptrace restrictions, and key freshness. |
 | `attestation/` | Three-node remote attestation integration test. |
 | `tls-attestation/` | Four-node early TLS attestation test with real TARAKO quotes, IMA replay to a vTPM, and a mock platform signer. |
-| `platform-evidence/` | Hardware-free checks for signed Intel TDX quotes and IMA-to-RTMR replay. |
+| `platform-evidence/` | Hardware-free checks for signed Intel TDX quotes and REPORTDATA binding. |
 
 Each suite keeps its Nix entry point and test code together. Checked-in test
 inputs (certificates, keys, and evidence fixtures) live in the owning suite’s

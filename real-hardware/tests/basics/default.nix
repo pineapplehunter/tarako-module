@@ -5,6 +5,7 @@
   nodes.attester = { pkgs, ... }: {
     boot.kernelPackages = pkgs.linuxPackages_latest;
     boot.kernelParams = [ "ima_policy=critical_data" ];
+    environment.systemPackages = [ pkgs.tdx-attest ];
     virtualisation.vlans = lib.mkForce [ ];
     virtualisation.qemu.options = [
       "-global virtio-pci.iommu_platform=on"

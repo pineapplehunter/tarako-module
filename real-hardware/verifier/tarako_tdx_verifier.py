@@ -64,12 +64,8 @@ def hex_bytes(value, size=None):
 
 def parse_policy(value):
     measurements = ("mr_td", "rtmr0", "rtmr1", "rtmr3", "ima_start_rtmr2")
-    fields(value, *measurements, "fsverity_digest", "ima_skip_count")
-    skip = value["ima_skip_count"]
-    if type(skip) is not int or skip != 0:
-        raise ValueError("full IMA coverage requires ima_skip_count = 0")
+    fields(value, *measurements, "fsverity_digest")
     return {**{name: hex_bytes(value[name], 48) for name in measurements},
-            "ima_skip_count": skip,
             "fsverity_digest": hex_bytes(value["fsverity_digest"], 32)}
 
 

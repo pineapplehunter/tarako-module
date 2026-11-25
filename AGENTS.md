@@ -6,7 +6,7 @@ See also README.md
 ## Development
 Nix build system is used for development.
 
-User these commands for common tasks.
+Use these commands for common tasks.
 
 ```sh
 nix build .#default # the TARAKO kernel module
@@ -20,7 +20,8 @@ make -C driver # build module against running kernel (outside nix)
 
 - **`driver/src/`**: Rust kernel module
 - **`tools/`**: simple attester, TLS attester and client, and their shared `libtarako` code.
-- **`test/`**: NixOS test definitions and driver definitions to run in a TDX machine.
+- **`test/`**: Hardware-independent checks and NixOS VM tests.
+- **`real-hardware/`**: Intel TDX guest configuration, live verifier, and hardware test drivers.
 
 Ioctls:
 | Constant | Code | Direction |
@@ -37,7 +38,7 @@ The kernel computes `ECDSA-SHA256(SK, fsverity_digest || user_data)` for 128 byt
 
 ## Conventions
 
-- The kernel driver uses `include!("...")` at `lib.rs:19-33` to embed sub-modules (not Cargo or `mod` in separate files). Do not add files without adding an `include!()` line in `lib.rs`.
-- DER encoding for public key and signature is done in userspace (`app/`) using the `der` crate — do NOT roll your own DER parser/formatter.
+- The kernel driver uses `include!("...")` in `driver/src/lib.rs` to embed submodules. Add an `include!()` entry when adding a driver submodule.
+- Use OpenSSL in `tools/` for public-key and signature DER encoding; do not write a custom parser or formatter.
 - Private key lives in a `SetOnce<KeyPair>` global (`KEY_PAIR`), populated during module init.
 

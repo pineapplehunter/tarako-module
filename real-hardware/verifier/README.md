@@ -12,8 +12,11 @@ tarako-tdx-verifier --policy policy.json --signing-key verdict-key.pem
 
 The service accepts `POST /verify` on `127.0.0.1:5102` by default and binds only
 on loopback. The policy pins `mr_td`, `rtmr0`, `rtmr1`, `rtmr3`, and
-`ima_start_rtmr2` (each 48-byte hex), `ima_skip_count` (nonnegative integer),
-and `fsverity_digest` (32-byte hex). The signing key is an EC private key in PEM.
+`ima_start_rtmr2` (each 48-byte hex), and `fsverity_digest` (32-byte hex).
+Replay always starts at the first IMA record. For an existing reviewed policy,
+remove the obsolete `ima_skip_count` field if its value is `0`; regenerate and
+review reference values for any older policy that used a nonzero skip.
+The signing key is an EC private key in PEM.
 The client supplies the exact CMW string and the plaintext SHA-384 IMA bank log;
 the verifier never fetches either from the guest. It limits the decoded UTF-8 IMA log to 4 MiB and the TDX quote to 16 KiB.
 

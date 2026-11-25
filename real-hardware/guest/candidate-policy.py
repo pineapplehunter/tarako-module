@@ -36,7 +36,6 @@ def main():
             "rtmr1": measurement("rtmr1"),
             "rtmr3": measurement("rtmr3"),
             "ima_start_rtmr2": initial.lower(),
-            "ima_skip_count": 0,
             "fsverity_digest": line[0].split(":")[1].lower(),
         }
     except (OSError, ValueError, subprocess.CalledProcessError,

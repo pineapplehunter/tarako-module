@@ -33,7 +33,7 @@ class VerifierTests(unittest.TestCase):
         digest = b"d" * 32
         self.policy = verifier.parse_policy(dict(
             mr_td="11" * 48, rtmr0="22" * 48, rtmr1="33" * 48, rtmr3="44" * 48,
-            ima_skip_count=0, ima_start_rtmr2=self.baseline.hex(), fsverity_digest=digest.hex()))
+            ima_start_rtmr2=self.baseline.hex(), fsverity_digest=digest.hex()))
         private = ec.generate_private_key(ec.SECP256R1())
         self.pub = private.public_key().public_bytes(serialization.Encoding.X962,
                                                      serialization.PublicFormat.CompressedPoint)
@@ -108,8 +108,16 @@ class VerifierTests(unittest.TestCase):
         self.reject("ima_replay")
 
     def test_legacy_skip_policy_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "ima_skip_count"):
-            verifier.parse_policy(dict(self.policy, ima_skip_count=1))
+        policy = {name: value.hex() for name, value in self.policy.items()}
+        for skip in (0, 1):
+            with self.subTest(skip=skip), self.assertRaisesRegex(ValueError, "unexpected JSON fields"):
+                verifier.parse_policy(dict(policy, ima_skip_count=skip))
+
+    def test_committed_wrong_key_is_rejected_even_when_replay_matches(self):
+        other, digest = tak_record(bytes([self.pub[0] ^ 1]) + self.pub[1:])
+        self.claims["rtmrs"][2] = extend(self.before_key, digest).hex()
+        self.request["ima_log"] = self.first + self.violation + other
+        self.reject("ima")
 
     def test_forged_template_fields_fail_despite_replay_match(self):
         self.request["ima_log"] = self.request["ima_log"].replace(
