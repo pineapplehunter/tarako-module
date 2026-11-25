@@ -1,6 +1,12 @@
-# Live TDX attestation
+# Real-hardware TDX attestation
 
-The attested connection requires HTTP/2. Use the client and server from the same checkout.
+This directory contains the TDX host packages (`host/`), guest configuration
+(`guest/`), verifier (`verifier/`), and hardware runners (`tests/`). The regular
+[`nix flake check` suites](../test/README.md) do not boot TDX guests.
+
+The attested connection requires HTTP/2. Use the client and server from the
+same checkout. When the server binary changes, collect and review its new
+fs-verity digest before updating the policy.
 
 ## Run from the TDX host with the NixOS test driver
 
@@ -10,19 +16,29 @@ vsock CID 2, port 4050. The driver boots a TDX attester and a regular VM that
 runs both the verifier and the client. No preconfigured guest or SSH tunnel
 is needed. The verifier VM needs network access to your collateral source.
 
-Choose exactly one mode. First collect candidate reference values from the
+To check hardware setup without starting a verifier or contacting Intel PCS,
+run the single-guest sanity test:
+
+```sh
+nix run .#real-hardware-basics
+```
+
+It checks that RTMR2 commits to the TARAKO key and that a fresh TDX quote
+verifies offline against its nonce.
+
+For end-to-end attestation, choose exactly one mode. First collect candidate reference values from the
 test image on a known-good host. This does **not** enroll those values or run
 the attestation test:
 
 ```sh
-TARAKO_TDX_WRITE_CANDIDATE=./candidate.json nix run .#live-tdx-test-driver
+TARAKO_TDX_WRITE_CANDIDATE=./candidate.json nix run .#real-hardware-test-driver
 ```
 
 Review the candidate and save the approved values separately as `reviewed.json`.
 Then run:
 
 ```sh
-TARAKO_TDX_POLICY=./reviewed.json nix run .#live-tdx-test-driver
+TARAKO_TDX_POLICY=./reviewed.json nix run .#real-hardware-test-driver
 ```
 
 The driver sets up fs-verity, test HTTPS credentials, the IMA log service, and
@@ -30,7 +46,8 @@ three loopback verifier instances. Expect four `PASS` lines: valid GET, wrong
 TLS hostname, wrong application digest, and IMA replay mismatch. The verifier
 uses Intel PCS by default; set `TARAKO_TDX_QCNL_CONFIG` to the absolute path of
 an operator-supplied QCNL JSON file to use a different collateral source.
-The existing `TARAKO_TDX_QEMU` and `TARAKO_TDX_FIRMWARE` overrides also apply.
+Set `TARAKO_TDX_QEMU` to the path of a different TDX-capable QEMU binary
+or `TARAKO_TDX_FIRMWARE` to a different TDVF image if needed.
 
 ## Boot only the attester for external testing
 
@@ -49,7 +66,7 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
    out=$(mktemp -d /tmp/tarako-attester.XXXXXX)
    printf 'Attester output directory: %s\n' "$out"
    TARAKO_TDX_TLS_NAME=tdxbox.example.net \
-     nix run .#live-tdx-attester-driver -- --output_directory "$out"
+     nix run .#real-hardware-attester-driver -- --output_directory "$out"
    ```
 
 2. Leave the driver running after it prints `Attester ready`. It exports
@@ -87,13 +104,14 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
    loopback:
 
    ```sh
-   QCNL_CONF_PATH="$PWD/live-tdx/intel-pcs.json" \
+   QCNL_CONF_PATH="$PWD/real-hardware/verifier/intel-pcs.json" \
      nix run .#live-tdx-verifier -- \
        --listen 127.0.0.1 --port 5102 \
        --policy "$lab/reviewed.json" --signing-key "$lab/verifier.key"
    ```
 
-   Leave it running. If you use a PCCS, use your own QCNL config with TLS validation enabled.
+   Leave it running. If you use a PCCS, use your own QCNL config with TLS
+   validation enabled.
 
 4. In a second terminal on the client machine, open the tunnel to the TDX
    host. No SSH to the guest or to a separate verifier VM is needed:
@@ -128,7 +146,7 @@ the verifier.
 ## TDX guest
 
 Use a measured guest kernel with TARAKO and the pinned IMA-to-RTMR2 extender
-(see `kernel/ima-rtmr-kernel.nix`). Boot with `ima_hash=sha384` and ensure the
+(see `real-hardware/guest/ima-rtmr-kernel.nix`). Boot with `ima_hash=sha384` and ensure the
 kernel exports `/sys/kernel/security/ima/ascii_runtime_measurements_sha384`
 even when the guest has no TPM. Ensure the extender is active **before**
 TARAKO records its key. The build and boot you approve must protect the TARAKO

@@ -2,14 +2,21 @@
   lib,
   python3Packages,
   makeWrapper,
-  dcapVerifier,
+  dcap-verify,
 }:
 
 python3Packages.buildPythonApplication {
   pname = "tarako-tdx-verifier";
   version = "0.1.0";
   pyproject = true;
-  src = ./.;
+  src = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [
+      ./pyproject.toml
+      ./tarako_tdx_verifier.py
+      ./test_verifier.py
+    ];
+  };
 
   build-system = [ python3Packages.setuptools ];
   dependencies = [ python3Packages.cryptography ];
@@ -19,7 +26,7 @@ python3Packages.buildPythonApplication {
     "--prefix"
     "PATH"
     ":"
-    (lib.makeBinPath [ dcapVerifier ])
+    (lib.makeBinPath [ dcap-verify ])
   ];
 
   doInstallCheck = true;

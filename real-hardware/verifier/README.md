@@ -1,7 +1,8 @@
 # Local TDX verifier
 
-Build with `pkgs.callPackage ./live-tdx/verifier/package.nix { inherit dcapVerifier; }`.
-The supplied package must expose `bin/tarako-dcap-verify`, which accepts a raw
+Build with `nix build .#live-tdx-verifier` or use `pkgs.live-tdx-verifier` with
+TARAKO's default overlay. The `dcap-verify` dependency provides
+`bin/tarako-dcap-verify`, which accepts a raw
 quote on stdin and exits successfully only after authenticating the quote,
 collateral, and claims. The Python service does not appraise collateral itself.
 

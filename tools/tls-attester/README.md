@@ -47,7 +47,7 @@ fixture verification and IMA-to-RTMR replay are separate checks; the IMA logs
 are synthetic and do not match the upstream signed quote.
 
 For real quote generation and cross-machine appraisal, see the separate
-[split-host live TDX suite](../../live-tdx/README.md).
+[split-host live TDX suite](../../real-hardware/README.md).
 
 ## Build and test
 

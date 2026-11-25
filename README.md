@@ -98,7 +98,10 @@ to that flake’s nixpkgs overlays.
 
 ### Running the test on TDX
 
-See the [live TDX runbook](live-tdx/README.md) for running the HTTP/2 attestation test on an Intel TDX host.
+See the [real-hardware TDX runbook](real-hardware/README.md) for running the HTTP/2 attestation test on an Intel TDX host.
+
+The TDX runner uses pinned vendor QEMU for the Ubuntu 24.04 Intel TDX host
+kernel and source-built TDVF.
 
 ## How the signing works
 

@@ -1,4 +1,4 @@
-# Shared TDX test-driver and attester configuration.
+# TDX guest and QEMU configuration.
 { lib, pkgs, ... }:
 {
   qemu = {
@@ -9,8 +9,8 @@
   nodes.attester =
     { pkgs, ... }:
     let
-      vendor-qemu = pkgs.callPackage ../tdx/qemu.nix { };
-      tdvf = pkgs.callPackage ../tdx/firmware.nix { };
+      vendor-qemu = pkgs.tdx-qemu;
+      tdvf = pkgs.tdx-firmware;
       # Default to pinned vendor QEMU and source-built TDVF, retaining overrides.
       tdx-qemu = pkgs.symlinkJoin {
         name = "tarako-tdx-qemu";
@@ -23,29 +23,8 @@
           ''} "$out/bin/qemu-system-x86_64"
         '';
       };
-
-      tdx-verify = pkgs.callPackage ../tdx/verify.nix { };
-      tdx-attest = pkgs.symlinkJoin {
-        name = "tdx-attest";
-        paths = [ (pkgs.writers.writePython3Bin "tdx-attest" { } ./tdx-attest.py) ];
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = ''
-          wrapProgram "$out/bin/tdx-attest" \
-            --prefix PATH : ${lib.makeBinPath [ tdx-verify ]}
-        '';
-      };
     in
     {
-      imports = [
-        ../kernel/ima-rtmr-kernel.nix
-        ./quote-tools.nix
-      ];
-
-      environment.systemPackages = [
-        tdx-attest
-        tdx-verify
-      ];
-
       virtualisation = {
         cores = 4;
         memorySize = 4096;

@@ -9,11 +9,12 @@
 
 Each suite keeps its Nix entry point and test code together. Checked-in test
 inputs (certificates, keys, and evidence fixtures) live in the owning suite’s
-`assets/` directory. The live TDX runners use the shared quote helpers.
+`assets/` directory. Offline TDX quote tooling lives in `tools/tdx-verify/`.
 [`flake.nix`](../flake.nix) composes shared NixOS modules through each test
 node’s `imports` list. Suites keep their own settings in module options.
 
 The simple-attestation test client uses its NixOS system CA bundle to validate
 the result signer. This is a test trust policy, not a production recommendation.
 
-The [live TDX runbook](../live-tdx/README.md) covers the hardware runners.
+The [real-hardware runbook](../real-hardware/README.md) covers TDX tests,
+which live separately from these checks.

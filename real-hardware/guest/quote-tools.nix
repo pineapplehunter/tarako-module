@@ -8,6 +8,8 @@ in
   environment.systemPackages = [
     tarako-quote
     tpm-quote
+    pkgs.tdx-attest
+    pkgs.tdx-verify
     pkgs.tpm2-tools
   ];
 }

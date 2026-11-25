@@ -1,6 +1,6 @@
 # Hardware-free platform evidence checks
 
-**Quote:** The existing `tdx/verify.nix` package and `test/tdx-attest.py`
+**Quote:** The existing `tools/tdx-verify/package.nix` package and `tools/tdx-verify/tdx-attest.py`
 verification path check go-tdx-guest's signed `tdx_prod_quote_SPR_E4.dat`
 fixture. The expected REPORTDATA is fixed to the quote v4 body bytes 568–631.
 Changing only the caller's expectation must fail specifically on REPORTDATA.
