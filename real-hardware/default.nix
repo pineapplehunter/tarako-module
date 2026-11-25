@@ -54,7 +54,6 @@ in
     {
       packages = {
         inherit (pkgs)
-          tdx-qemu
           tdx-firmware
           dcap-verify
           live-tdx-verifier

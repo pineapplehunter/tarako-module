@@ -1,7 +1,7 @@
 # Real-hardware TDX attestation
 
-This directory contains the TDX host packages (`host/`), guest configuration
-(`guest/`), verifier (`verifier/`), and hardware runners (`tests/`). The regular
+This directory contains the TDX guest configuration (`guest/`), verifier
+(`verifier/`), and hardware runners (`tests/`). The regular
 [`nix flake check` suites](../test/README.md) do not boot TDX guests.
 
 The attested connection requires HTTP/2. Use the client and server from the
@@ -10,8 +10,9 @@ fs-verity digest before updating the policy.
 
 ## Run from the TDX host with the NixOS test driver
 
-Run the driver on an x86-64 TDX host **outside** the Nix build sandbox.
-The host must provide KVM, vhost-vsock and a working Intel QGS on
+Run the driver on an x86-64 Ubuntu 26.04 LTS TDX host **outside** the Nix build
+sandbox. The driver uses upstream QEMU from nixpkgs. The host must provide
+KVM, vhost-vsock, and a working Intel QGS on
 vsock CID 2, port 4050. The driver boots a TDX attester and a regular VM that
 runs both the verifier and the client. No preconfigured guest or SSH tunnel
 is needed. The verifier VM needs network access to your collateral source.

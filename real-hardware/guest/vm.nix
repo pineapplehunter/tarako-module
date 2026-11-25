@@ -9,17 +9,16 @@
   nodes.attester =
     { pkgs, ... }:
     let
-      vendor-qemu = pkgs.tdx-qemu;
       tdvf = pkgs.tdx-firmware;
-      # Default to pinned vendor QEMU and source-built TDVF, retaining overrides.
+      # Use upstream QEMU unless the host supplies an explicit override.
       tdx-qemu = pkgs.symlinkJoin {
         name = "tarako-tdx-qemu";
-        paths = [ vendor-qemu ];
-        passthru.stdenv = vendor-qemu.stdenv;
+        paths = [ pkgs.qemu ];
+        passthru.stdenv = pkgs.qemu.stdenv;
         postBuild = ''
           rm "$out/bin/qemu-system-x86_64"
           ln -s ${pkgs.writeShellScript "tarako-tdx-qemu" ''
-            exec "''${TARAKO_TDX_QEMU:-${vendor-qemu}/bin/qemu-system-x86_64}" "$@"
+            exec "''${TARAKO_TDX_QEMU:-${pkgs.qemu}/bin/qemu-system-x86_64}" "$@"
           ''} "$out/bin/qemu-system-x86_64"
         '';
       };
