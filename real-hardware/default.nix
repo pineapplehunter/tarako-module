@@ -20,7 +20,7 @@ in
   };
 
   perSystem =
-    { config, lib, ... }:
+    { config, ... }:
     let
       inherit (config.tarako) pkgs;
       realHardwareTest =
@@ -35,18 +35,15 @@ in
             tarakoImaRtmr
           ];
         };
-      realHardwareDriver =
-        attesterOnly:
+      testAttesterModules = [
+        ./guest/test-attester.nix
+        nixosModules.tarakoTdxImaLog
+      ];
+      singleAttesterDriver =
+        test:
         (realHardwareTest {
-          imports = [ ./tests/attestation ];
-          tarako.attesterOnly = attesterOnly;
-          tarako.qcnlConfigFile = ./verifier/intel-pcs.json;
-          nodes = {
-            attester.imports = [ nixosModules.tarakoTdxImaLog ];
-          }
-          // lib.optionalAttrs (!attesterOnly) {
-            verifier.imports = [ nixosModules.tarakoTdxVerifier ];
-          };
+          imports = [ test ];
+          nodes.attester.imports = testAttesterModules ++ [ ./guest/external-network.nix ];
         }).driver;
     in
     {
@@ -61,8 +58,15 @@ in
           live-tdx-smoke
           ;
         real-hardware-basics = (realHardwareTest ./tests/basics).driver;
-        real-hardware-test-driver = realHardwareDriver false;
-        real-hardware-attester-driver = realHardwareDriver true;
+        real-hardware-test-driver =
+          (realHardwareTest {
+            imports = [ ./tests/attestation ];
+            tarako.qcnlConfigFile = ./verifier/intel-pcs.json;
+            nodes.attester.imports = testAttesterModules;
+            nodes.verifier.imports = [ nixosModules.tarakoTdxVerifier ];
+          }).driver;
+        real-hardware-attester-driver = singleAttesterDriver ./tests/attester-only;
+        real-hardware-get-policy = singleAttesterDriver ./tests/get-policy;
       };
     };
 }

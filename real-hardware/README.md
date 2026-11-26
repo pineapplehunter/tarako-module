@@ -27,28 +27,39 @@ nix run .#real-hardware-basics
 It checks that RTMR2 commits to the TARAKO key and that a fresh TDX quote
 verifies offline against its nonce.
 
-For end-to-end attestation, choose exactly one mode. First collect candidate reference values from the
-test image on a known-good host. This does **not** enroll those values or run
-the attestation test:
+Run the complete TLS attestation test with:
 
 ```sh
-TARAKO_TDX_WRITE_CANDIDATE=./candidate.json nix run .#real-hardware-test-driver
+nix run .#real-hardware-test-driver
 ```
 
-Review the candidate and save the approved values separately as `reviewed.json`.
-Then run:
-
-```sh
-TARAKO_TDX_POLICY=./reviewed.json nix run .#real-hardware-test-driver
-```
+The test collects a candidate from the guest it just booted and uses it only
+for that run. It does not need a reviewed policy file or export one for reuse.
+This tests the attestation flow, not whether the guest build should be trusted
+by an external verifier. Strict Intel DCAP appraisal still applies.
 
 The driver sets up fs-verity, test HTTPS credentials, the IMA log service, and
-three loopback verifier instances. Expect four `PASS` lines: valid GET, wrong
-TLS hostname, wrong application digest, and IMA replay mismatch. The verifier
-uses Intel PCS by default; set `TARAKO_TDX_QCNL_CONFIG` to the absolute path of
-an operator-supplied QCNL JSON file to use a different collateral source.
+three loopback verifier instances. The four subtests check a successful GET
+and rejection of a wrong TLS hostname, a wrong application digest, and an IMA
+replay mismatch. The verifier uses Intel PCS by default; set
+`TARAKO_TDX_QCNL_CONFIG` to the absolute path of an operator-supplied QCNL JSON
+file to use a different collateral source.
 Set `TARAKO_TDX_QEMU` to the path of a different TDX-capable QEMU binary
 or `TARAKO_TDX_FIRMWARE` to a different TDVF image if needed.
+
+## Export a candidate policy
+
+On the TDX host, run:
+
+```sh
+policy_out=$(mktemp -d /tmp/tarako-policy.XXXXXX)
+nix run .#real-hardware-get-policy -- --output_directory "$policy_out"
+```
+
+This boots one guest, writes an unreviewed `candidate.json` into the output
+directory, and exits. It does not start a TLS server or verifier. Use the same
+checkout and firmware for the export and attester-only runners. If the
+measured boot or executable changes, collect and review a new candidate.
 
 ## Boot only the attester for external testing
 
@@ -71,22 +82,24 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
    ```
 
 2. Leave the driver running after it prints `Attester ready`. It exports
-   `https-ca.pem`, `candidate.json`, and `tls-name` to the printed directory.
-   It stops on Ctrl-C, guest shutdown, or the one-hour test timeout.
+   `https-ca.pem` and `tls-name` to the printed directory. The separate
+   policy runner above exports `candidate.json`. The attester stops on
+   Ctrl-C, guest shutdown, or the one-hour test timeout.
 
 ### Client side (includes the verifier)
 
 1. In a terminal in the TARAKO checkout, set the **SSH destination** for your
-   physical TDX host and the output directory printed above. Copy the three
-   files into a fresh directory **outside the checkout**:
+   physical TDX host and the output directories from the two runs. Copy the
+   three files into a fresh directory **outside the checkout**:
 
    ```sh
    TDX_HOST=alice@tdxbox.example.net
    ATTESTER_OUT=/tmp/tarako-attester.REPLACE_ME
+   POLICY_OUT=/tmp/tarako-policy.REPLACE_ME
    lab=$(mktemp -d /tmp/tarako-client.XXXXXX)
    printf 'Client work directory: %s\n' "$lab"
    scp "$TDX_HOST:$ATTESTER_OUT/https-ca.pem" \
-       "$TDX_HOST:$ATTESTER_OUT/candidate.json" \
+       "$TDX_HOST:$POLICY_OUT/candidate.json" \
        "$TDX_HOST:$ATTESTER_OUT/tls-name" "$lab/"
    ```
 
