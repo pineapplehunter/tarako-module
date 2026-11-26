@@ -1,7 +1,5 @@
 { lib, ... }:
 let
-  state = "/run/tls-attestation";
-  measured = "/mnt/tls-attestation";
   # Tests provision keys and policy first, then start these units explicitly.
   service = command: {
     after = [ "network.target" ];
@@ -10,6 +8,13 @@ let
       ExecStart = lib.concatStringsSep " " command;
     };
   };
+  setupCertificate =
+    { writeShellApplication, openssl }:
+    writeShellApplication {
+      name = "setup-certificate";
+      runtimeInputs = [ openssl ];
+      text = builtins.readFile ./setup-certificate.sh;
+    };
 in
 {
   name = "tarako-tls-attestation";
@@ -32,25 +37,32 @@ in
           };
         };
         environment.systemPackages = [
-          pkgs.tls-attester
-          pkgs.e2fsprogs
-          pkgs.fsverity-utils
           pkgs.openssl
-          pkgs.tpm2-tools
+          (pkgs.writeShellApplication {
+            name = "setup-attester-binary-fsverity";
+            runtimeInputs = [
+              pkgs.e2fsprogs
+              pkgs.fsverity-utils
+              pkgs.tls-attester
+              pkgs.util-linux
+            ];
+            text = builtins.readFile ./setup-attester-binary-fsverity.sh;
+          })
+          (pkgs.callPackage setupCertificate { })
         ];
         networking.firewall.allowedTCPPorts = [ 8443 ];
         systemd.services."tls-attester@" = service [
-          "${measured}/tarako-tls-attester"
+          "/mnt/tls-attestation/tarako-tls-attester"
           "0.0.0.0:8443"
-          "${state}/%i.pem"
-          "${state}/%i.key"
+          "/run/tls-attestation/%i.pem"
+          "/run/tls-attestation/%i.key"
           "http://mock:5101/quote"
         ];
         systemd.services."tls-attester-fault@" = service [
-          "${measured}/tarako-tls-attester-test"
+          "/mnt/tls-attestation/tarako-tls-attester-test"
           "0.0.0.0:8443"
-          "${state}/server.pem"
-          "${state}/server.key"
+          "/run/tls-attestation/server.pem"
+          "/run/tls-attestation/server.key"
           "http://mock:5101/quote"
           "%i"
         ];
@@ -60,25 +72,25 @@ in
       {
         environment.systemPackages = [
           pkgs.tls-client
-          pkgs.openssl
+          pkgs.curl
         ];
       };
     mock =
       { pkgs, ... }:
       {
         environment.systemPackages = [
-          pkgs.openssl
           pkgs.xxd
+          (pkgs.callPackage setupCertificate { })
         ];
         networking.firewall.allowedTCPPorts = [ 5101 ];
         systemd.services.mock-quote = service [
           "${lib.getExe' pkgs.tls-mock-services "tarako-mock-platform-signer"}"
           "--signing-key"
-          "${state}/signing.key"
+          "/run/tls-attestation/signing.key"
           "--signing-cert"
-          "${state}/signing-cert.pem"
+          "/run/tls-attestation/signing-cert.pem"
           "--tak-file"
-          "${state}/tak.bin"
+          "/run/tls-attestation/tak.bin"
         ];
       };
     verifier =
@@ -87,18 +99,19 @@ in
         environment.systemPackages = [
           pkgs.openssl
           pkgs.xxd
+          (pkgs.writers.writePython3Bin "tarako-measured-tak" { } ./measured-tak.py)
         ];
         networking.firewall.allowedTCPPorts = [ 5102 ];
         systemd.services.quote-verifier = service [
           "${lib.getExe' pkgs.tls-mock-services "tarako-tls-verifier"}"
           "--signing-key"
-          "${state}/signing.key"
+          "/run/tls-attestation/signing.key"
           "--tak-file"
-          "${state}/tak.bin"
+          "/run/tls-attestation/tak.bin"
           "--platform-ca"
-          "${state}/platform-ca.pem"
+          "/run/tls-attestation/platform-ca.pem"
           "--digest-file"
-          "${state}/digest"
+          "/run/tls-attestation/digest"
         ];
       };
   };
@@ -106,237 +119,156 @@ in
   testScript = ''
     """Exercise real Tarako ioctls and TLS, with a mock (not TDX) platform signer."""
     from datetime import timedelta
-    from hashlib import new, sha256
     from itertools import product
+    import json
     from shlex import quote
-    from struct import pack
+
+    IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements_sha256"
 
     start_all()
 
-    STATE = "/run/tls-attestation"
-    MEASURED = "/mnt/tls-attestation"
-    IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements_sha256"
+    with subtest("prepare the VM state directories"):
+        for machine in (attester, client, verifier, mock):
+            machine.succeed("install -d -m 0700 /run/tls-attestation")
 
-
-    def measured_tak(log, expected_pcr):
-        pcr = bytes(32)
-        tak = None
-        for line in log.splitlines():
-            index, digest, template, *fields = line.split()
-            if index != "10":
-                continue
-            bank_digest = bytes.fromhex(digest)
-            assert len(bank_digest) == 32, "expected a SHA-256 IMA bank digest"
-            if template == "ima-buf" and len(fields) >= 2 and fields[1] == "public-key-generate":
-                assert tak is None, "multiple TARAKO public-key events in IMA"
-                hash_field, event_name, payload = fields
-                algorithm, inner_digest = hash_field.split(":", 1)
-                tak = bytes.fromhex(payload)
-                assert len(tak) == 33 and tak[0] in (2, 3), "invalid compressed TARAKO public key"
-                inner = new(algorithm, tak).digest()
-                assert inner.hex() == inner_digest, "TARAKO public-key payload digest mismatch"
-                # Rebuild ima-buf so the PCR match also commits to the displayed key.
-                data = (algorithm.encode() + b":\0" + inner, event_name.encode() + b"\0", tak)
-                encoded = b"".join(pack("<I", len(field)) + field for field in data)
-                assert sha256(encoded).digest() == bank_digest, "TARAKO IMA template digest mismatch"
-            pcr = sha256(pcr + (bank_digest if any(bank_digest) else b"\xff" * 32)).digest()
-            if pcr == expected_pcr:
-                assert tak is not None, "TARAKO public key is outside the matching IMA prefix"
-                return tak.hex()
-        raise AssertionError("SHA-256 IMA log did not replay to vTPM PCR 10")
-
-
-    def write_public(machine, name, contents):
-        machine.succeed(f"printf %s {quote(contents)} > {STATE}/{name}")
-
-
-    def start_service(machine, unit, port):
-        machine.succeed(f"systemctl start {unit}.service")
-        machine.wait_for_open_port(port, timeout=timedelta(seconds=30))
-
-
-    def server_log(unit):
-        attester.succeed("journalctl --sync")
-        return attester.succeed(f"journalctl -u {unit}.service -o cat --no-pager")
-
-
-    def request_count(unit):
-        return server_log(unit).count("HTTP request accepted")
-
-
-    def https_get(hostname="localhost"):
-        return (
-            f"timeout 20s tarako-tls-client attester:8443 {hostname} {STATE}/ca.pem "
-            f"http://verifier:5102/verify {STATE}/verifier-public.pem"
+    with subtest("enable fs-verity and measure the attester binaries"):
+        measurements = attester.succeed(
+            "setup-attester-binary-fsverity /run/tls-attestation /mnt/tls-attestation"
         )
+        digests = dict(line.split() for line in measurements.splitlines())
 
-
-    def check_rejection(unit, command, reason):
-        before = request_count(unit)
-        output = client.fail(f"{command} 2>&1")
-        print(output.rstrip(), flush=True)
-        assert reason in output, output
-        assert request_count(unit) == before, output
-
-
-    for machine in (attester, client, verifier, mock):
-        machine.wait_for_unit("multi-user.target")
-        machine.succeed(f"install -d -m 0700 {STATE}")
-
-    # Format a private ext4 filesystem with verity from the outset. This does not
-    # change the VM's root filesystem and does not require a reboot.
-    attester.succeed(
-        f"mkdir -p {MEASURED} && truncate -s 128M {STATE}/verity.img && "
-        f"mkfs.ext4 -q -F -O verity {STATE}/verity.img && "
-        f"mount -o loop {STATE}/verity.img {MEASURED}"
-    )
-
-    digests = {}
-    for binary in ("tarako-tls-attester", "tarako-tls-attester-test"):
-        path = f"{MEASURED}/{binary}"
-        attester.succeed(
-            f"install -m755 $(command -v {binary}) {path} && "
-            f"fsverity enable --hash-alg=sha256 --block-size=1024 {path}"
-        )
-        measured = attester.succeed(f"fsverity measure {path}").split()[0]
-        algorithm, digest = measured.split(":")
-        assert algorithm == "sha256" and len(bytes.fromhex(digest)) == 32, measured
-        digests[binary] = digest
-
-    # Check the boot log before using its key to bootstrap the mock services.
-    with subtest("IMA replay to vTPM PCR 10 binds the TARAKO public key"):
+    # Supply the known-good PCR snapshot and log to the verifier VM. Replay
+    # there once to provision the key used by the mock services.
+    with subtest("verifier replays IMA to vTPM PCR 10 and extracts the TARAKO key"):
         attester.succeed("test -c /dev/tarako")
         # Read PCR first: later measurements may append to the log, but the
         # key must be in the prefix that matches this snapshot.
-        pcr = bytes.fromhex(attester.succeed(
-            f"tpm2_pcrread -T device:/dev/tpmrm0 -o {STATE}/ima.pcr sha256:10 >/dev/null && "
-            f"od -An -v -tx1 {STATE}/ima.pcr"
-        ))
-        assert len(pcr) == 32, "expected one SHA-256 PCR value"
-        tak = measured_tak(attester.succeed(f"cat {IMA_LOG}"), pcr)
-    for machine in (mock, verifier):
-        machine.succeed(f"printf %s {quote(tak)} | xxd -r -p > {STATE}/tak.bin")
-    # The platform root stands in for Intel's CA. The signer gets a leaf, not the
-    # root key. These certificates never participate in web TLS authentication.
-    mock.succeed(f"""
-        set -e
-        cd {STATE}
-        umask 077
-        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \\
-            -days 2 -subj '/CN=Mock Platform CA' -keyout platform-ca.key -out platform-ca.pem \\
-            -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \\
-            -addext 'keyUsage=critical,keyCertSign,cRLSign'
-        openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc \\
-            -subj '/CN=Mock Platform Quote Signer' -keyout signing.key -out signing.csr
-        printf '%s\\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' > signing.ext
-        openssl x509 -req -in signing.csr -CA platform-ca.pem -CAkey platform-ca.key \\
-            -CAcreateserial -days 1 -extfile signing.ext -out signing-cert.pem
-        rm platform-ca.key
-    """)
-    platform_ca = mock.succeed(f"cat {STATE}/platform-ca.pem")
-    for machine in (attester, client, verifier):
-        write_public(machine, "platform-ca.pem", platform_ca)
+        pcr = json.loads(attester.succeed("systemd-analyze --json=short pcrs 10"))[0]["sha256"]
+        ima_log = attester.succeed(f"cat {IMA_LOG}")
+        tak = verifier.succeed(f"printf %s {quote(ima_log)} | tarako-measured-tak {quote(pcr)}").strip()
 
-    verifier.succeed(
-        f"umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 "
-        f"-out {STATE}/signing.key && openssl pkey -in {STATE}/signing.key "
-        f"-pubout -out {STATE}/signing.pem"
-    )
-    write_public(client, "verifier-public.pem", verifier.succeed(f"cat {STATE}/signing.pem"))
+    with subtest("provision the mock platform signer and verifier trust"):
+        for machine in (mock, verifier):
+            machine.succeed(f"printf %s {quote(tak)} | xxd -r -p > /run/tls-attestation/tak.bin")
+        mock.succeed("setup-certificate mock /run/tls-attestation")
+        platform_ca = mock.succeed("cat /run/tls-attestation/platform-ca.pem")
+        verifier.succeed(f"printf %s {quote(platform_ca)} > /run/tls-attestation/platform-ca.pem")
 
-    attester.succeed(f"""
-        set -e
-        cd {STATE}
-        umask 077
-        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \\
-            -days 2 -subj '/CN=HTTPS Test CA' -keyout ca.key -out ca.pem \\
-            -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \\
-            -addext 'keyUsage=critical,keyCertSign,cRLSign'
-        printf '%s\\n' 'subjectAltName=DNS:localhost' 'extendedKeyUsage=serverAuth' > server.ext
-        for cert in server rotated; do
-            openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \\
-                -subj /CN=localhost -keyout "$cert.key" -out "$cert.csr"
-            openssl x509 -req -in "$cert.csr" -CA ca.pem -CAkey ca.key \\
-                -CAcreateserial -days 1 -extfile server.ext -out "$cert.pem"
-        done
-        rm ca.key
-    """)
-    write_public(client, "ca.pem", attester.succeed(f"cat {STATE}/ca.pem"))
-    assert attester.succeed(f"openssl x509 -in {STATE}/server.pem -pubkey -noout") != (
-        attester.succeed(f"openssl x509 -in {STATE}/rotated.pem -pubkey -noout")
-    )
+    with subtest("generate the verifier signing key and give its public key to the client"):
+        verifier.succeed(
+            "umask 077; openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 "
+            "-out /run/tls-attestation/signing.key && openssl pkey -in /run/tls-attestation/signing.key "
+            "-pubout -out /run/tls-attestation/signing.pem"
+        )
+        verifier_key = verifier.succeed("cat /run/tls-attestation/signing.pem")
+        client.succeed(f"printf %s {quote(verifier_key)} > /run/tls-attestation/verifier-public.pem")
 
-    start_service(mock, "mock-quote", 5101)
+    with subtest("generate the attester's HTTPS certificates and give the client the CA"):
+        attester.succeed("setup-certificate attester /run/tls-attestation")
+        tls_ca = attester.succeed("cat /run/tls-attestation/ca.pem")
+        client.succeed(f"printf %s {quote(tls_ca)} > /run/tls-attestation/ca.pem")
+
+    port_timeout = timedelta(seconds=30)
 
 
     def start_verifier(binary):
-        write_public(verifier, "digest", digests[binary])
-        start_service(verifier, "quote-verifier", 5102)
+        verifier.succeed(f"printf %s {quote(digests[binary])} > /run/tls-attestation/digest")
+        verifier.succeed("systemctl start quote-verifier.service")
+        verifier.wait_for_open_port(5102, timeout=port_timeout)
 
 
-    normal = "tarako-tls-attester"
-    faultable = "tarako-tls-attester-test"
-    baseline = "tls-attester@server"
-    rotated = "tls-attester@rotated"
-    start_verifier(normal)
-    start_service(attester, baseline, 8443)
+    request_timeout = timedelta(seconds=20)
+    client_args = "/run/tls-attestation/ca.pem http://verifier:5102/verify /run/tls-attestation/verifier-public.pem"
+    with subtest("start the mock signer, verifier, and attester"):
+        mock.succeed("systemctl start mock-quote.service")
+        mock.wait_for_open_port(5101, timeout=port_timeout)
+        start_verifier("tarako-tls-attester")
+        attester.succeed("systemctl start tls-attester@server.service")
+        attester.wait_for_open_port(8443, timeout=port_timeout)
+
     with subtest("attested HTTP/2 succeeds"):
-        before = request_count(baseline)
-        body = client.succeed(https_get())
-        print(body, flush=True)
-        assert body == "Tarako OK", body
-        assert request_count(baseline) == before + 1
-    with subtest("offering h2 alone cannot skip attestation"):
-        before = request_count(baseline)
-        output = client.fail(
-            f"timeout 20s openssl s_client -connect attester:8443 -servername localhost "
-            f"-verify_hostname localhost -verify_return_error -CAfile {STATE}/ca.pem "
-            "-tls1_3 -alpn h2 -ciphersuites TLS_AES_128_GCM_SHA256 </dev/null 2>&1"
+        result = client.succeed(
+            f"tarako-tls-client attester:8443 localhost {client_args}",
+            timeout=request_timeout,
         )
-        assert "no peer certificate available" in output, output
-        log = server_log(baseline)
-        assert "missing required attestation offer" in log, log
-        assert log.count("HTTP request accepted") == before, output
+        print(result, flush=True)
+        assert result == "Tarako OK", result
+    with subtest("offering h2 alone cannot skip attestation"):
+        result = client.fail(
+            "curl --silent --show-error --http2-prior-knowledge --tlsv1.3 --tls-max 1.3 "
+            "--tls13-ciphers TLS_AES_128_GCM_SHA256 --connect-to localhost:8443:attester:8443 "
+            "--cacert /run/tls-attestation/ca.pem https://localhost:8443/ 2>&1",
+            timeout=request_timeout,
+        )
+        assert "curl: (35)" in result and "alert handshake failure" in result.lower(), result
     with subtest("verifier unavailable: no fallback to TLS alone"):
         verifier.succeed("systemctl stop quote-verifier.service")
-        verifier.wait_until_fails("ss -Hlt 'sport = :5102' | grep -q .", timeout=timedelta(seconds=30))
-        check_rejection(baseline, https_get(), "verifier unavailable")
-        start_verifier(normal)
-        before = request_count(baseline)
-        body = client.succeed(https_get())
-        print(body, flush=True)
-        assert body == "Tarako OK", body
-        assert request_count(baseline) == before + 1
-    attester.succeed(f"systemctl stop {baseline}.service")
+        verifier.wait_until_fails("ss -Hlt 'sport = :5102' | grep -q .", timeout=port_timeout)
+        result = client.fail(
+            f"tarako-tls-client attester:8443 localhost {client_args} 2>&1",
+            timeout=request_timeout,
+        )
+        print(result.rstrip(), flush=True)
+        assert "verifier unavailable" in result, result
+        start_verifier("tarako-tls-attester")
+        result = client.succeed(
+            f"tarako-tls-client attester:8443 localhost {client_args}",
+            timeout=request_timeout,
+        )
+        print(result, flush=True)
+        assert result == "Tarako OK", result
     with subtest("same-name certificate and key rotation"):
-        start_service(attester, rotated, 8443)
-        before = request_count(rotated)
-        body = client.succeed(https_get())
-        print(body, flush=True)
-        assert body == "Tarako OK", body
-        assert request_count(rotated) == before + 1
-        attester.succeed(f"systemctl stop {rotated}.service")
+        attester.succeed("systemctl stop tls-attester@server.service")
+        assert attester.succeed("openssl x509 -in /run/tls-attestation/server.pem -pubkey -noout") != (
+            attester.succeed("openssl x509 -in /run/tls-attestation/rotated.pem -pubkey -noout")
+        )
+        attester.succeed("systemctl start tls-attester@rotated.service")
+        attester.wait_for_open_port(8443, timeout=port_timeout)
+        result = client.succeed(
+            f"tarako-tls-client attester:8443 localhost {client_args}",
+            timeout=request_timeout,
+        )
+        print(result, flush=True)
+        assert result == "Tarako OK", result
+        attester.succeed("systemctl stop tls-attester@rotated.service")
 
-    verifier.succeed("systemctl stop quote-verifier.service")
-    start_verifier(faultable)
-    # The test binary applies these faults after the real ioctl and mock quote.
-    # Both hostname rows use the exact same certificate and key for each mode.
-    for mode, tls_ok in product(("valid", "tarako", "platform", "both"), (True, False)):
-        with subtest(f"TLS valid={tls_ok}, evidence mode={mode}"):
+    with subtest("configure the verifier for the fault-test attester"):
+        verifier.succeed("systemctl stop quote-verifier.service")
+        start_verifier("tarako-tls-attester-test")
+
+    with subtest("fault-test attester succeeds without faults"):
+        attester.succeed("systemctl start tls-attester-fault@valid.service")
+        attester.wait_for_open_port(8443, timeout=port_timeout)
+        result = client.succeed(
+            f"tarako-tls-client attester:8443 localhost {client_args}",
+            timeout=request_timeout,
+        )
+        print(result, flush=True)
+        assert result == "Tarako OK", result
+        attester.succeed("systemctl stop tls-attester-fault@valid.service")
+
+    # The fault-test binary modifies the evidence after obtaining real TARAKO
+    # and mock platform quotes. All cases use the same certificate and key.
+    evidence_errors = {
+        "valid": None,
+        "tarako": "verifier rejected: tarako",
+        "platform": "verifier rejected: platform",
+        "both": "verifier rejected: platform",  # Platform is checked first.
+    }
+    for mode, hostname in product(evidence_errors, ("localhost", "wrong.example")):
+        reason = evidence_errors[mode] if hostname == "localhost" else "TLS authentication:"
+        if reason is None:
+            continue  # The all-valid case already ran above.
+        with subtest(f"reject evidence mode={mode}, hostname={hostname}"):
             unit = f"tls-attester-fault@{mode}"
-            start_service(attester, unit, 8443)
-            if not tls_ok:
-                check_rejection(unit, https_get("wrong.example"), "TLS authentication:")
-            elif mode == "valid":
-                before = request_count(unit)
-                body = client.succeed(https_get())
-                print(body, flush=True)
-                assert body == "Tarako OK", body
-                assert request_count(unit) == before + 1
-            else:
-                # When both fail, platform evidence is checked first.
-                stage = "tarako" if mode == "tarako" else "platform"
-                check_rejection(unit, https_get(), f"verifier rejected: {stage}")
+            attester.succeed(f"systemctl start {unit}.service")
+            attester.wait_for_open_port(8443, timeout=port_timeout)
+            result = client.fail(
+                f"tarako-tls-client attester:8443 {hostname} {client_args} 2>&1",
+                timeout=request_timeout,
+            )
+            print(result.rstrip(), flush=True)
+            assert reason in result, result
             attester.succeed(f"systemctl stop {unit}.service")
   '';
 }

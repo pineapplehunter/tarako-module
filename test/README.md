@@ -15,6 +15,9 @@ node’s `imports` list. Suites keep their own settings in module options.
 
 The quote-attestation test client uses its NixOS system CA bundle to validate
 the result signer. This is a test trust policy, not a production recommendation.
+For the mock TLS test, the harness supplies the attester's vTPM PCR snapshot
+and IMA log. The verifier VM replays the log to extract the TARAKO key during
+setup; the mock verifier does not replay IMA on each request.
 
 The [real-hardware runbook](../real-hardware/README.md) covers TDX tests,
 which live separately from these checks.
