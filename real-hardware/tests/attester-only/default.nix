@@ -1,5 +1,5 @@
 {
-  name = "tarako-real-hardware-attester";
+  name = "tarako-real-hardware-attester-only";
 
   testScript = ''
     from datetime import timedelta

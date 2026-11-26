@@ -13,12 +13,7 @@ final: prev: {
       (prev.lib.makeBinPath [ final.fsverity-utils ])
     ];
   } ./guest/candidate-policy.py;
-  live-tdx-smoke = final.writers.writePython3Bin "tarako-tdx-smoke" {
-    makeWrapperArgs = [
-      "--prefix"
-      "PATH"
-      ":"
-      (prev.lib.makeBinPath [ final.tdx-client ])
-    ];
-  } ./tests/attestation/smoke.py;
+  real-hardware-tls-client-check =
+    final.writers.writePython3Bin "tarako-tdx-tls-client-check" { }
+      ./tests/tls-attestation/check-tls-client.py;
 }

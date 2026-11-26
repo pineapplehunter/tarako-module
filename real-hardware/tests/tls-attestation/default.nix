@@ -15,7 +15,7 @@ in
   };
 
   config = {
-    name = "tarako-real-hardware";
+    name = "tarako-real-hardware-tls-attestation";
 
     nodes.verifier = { pkgs, ... }: {
       # Only the verifier VM needs outbound DNS and HTTPS for Intel collateral.

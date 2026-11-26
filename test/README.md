@@ -2,8 +2,8 @@
 
 | Directory | Purpose |
 | --- | --- |
-| `tarako-basics/` | Single-VM sanity checks for module lockdown, fs-verity signing, ptrace restrictions, and key freshness. |
-| `attestation/` | Three-node remote attestation integration test. |
+| `basics/` | Single-VM sanity checks for module lockdown, fs-verity signing, ptrace restrictions, and key freshness. |
+| `quote-attestation/` | Three-node remote attestation integration test using the quote API. |
 | `tls-attestation/` | Four-node early TLS attestation test with real TARAKO quotes, IMA replay to a vTPM, and a mock platform signer. |
 | `platform-evidence/` | Hardware-free checks for signed Intel TDX quotes and REPORTDATA binding. |
 
@@ -13,7 +13,7 @@ inputs (certificates, keys, and evidence fixtures) live in the owning suite’s
 [`flake.nix`](../flake.nix) composes shared NixOS modules through each test
 node’s `imports` list. Suites keep their own settings in module options.
 
-The simple-attestation test client uses its NixOS system CA bundle to validate
+The quote-attestation test client uses its NixOS system CA bundle to validate
 the result signer. This is a test trust policy, not a production recommendation.
 
 The [real-hardware runbook](../real-hardware/README.md) covers TDX tests,

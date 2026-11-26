@@ -1,6 +1,6 @@
 { lib, ... }:
 {
-  name = "tarako-attestation";
+  name = "tarako-quote-attestation";
 
   nodes = {
     attester = import ./simple-attester.nix;

@@ -1,4 +1,4 @@
-"""Run the live split-host test; no SSH access to the TDX guest is needed."""
+"""Check HTTPS success and expected rejections against running TDX attestation services."""
 import argparse
 import subprocess
 import sys

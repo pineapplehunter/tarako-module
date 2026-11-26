@@ -30,7 +30,7 @@ verifies offline against its nonce.
 Run the complete TLS attestation test with:
 
 ```sh
-nix run .#real-hardware-test-driver
+nix run .#real-hardware-tls-attestation
 ```
 
 The test collects a candidate from the guest it just booted and uses it only
@@ -53,7 +53,7 @@ On the TDX host, run:
 
 ```sh
 policy_out=$(mktemp -d /tmp/tarako-policy.XXXXXX)
-nix run .#real-hardware-get-policy -- --output_directory "$policy_out"
+nix run .#real-hardware-export-policy -- --output_directory "$policy_out"
 ```
 
 This boots one guest, writes an unreviewed `candidate.json` into the output
@@ -78,7 +78,7 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
    out=$(mktemp -d /tmp/tarako-attester.XXXXXX)
    printf 'Attester output directory: %s\n' "$out"
    TARAKO_TDX_TLS_NAME=tdxbox.example.net \
-     nix run .#real-hardware-attester-driver -- --output_directory "$out"
+     nix run .#real-hardware-attester-only -- --output_directory "$out"
    ```
 
 2. Leave the driver running after it prints `Attester ready`. It exports
@@ -246,7 +246,7 @@ Forward host loopback to VM loopback, e.g. on the client machine run
 `ssh -N -L 127.0.0.1:5102:127.0.0.1:5102 verifier-vm`. This is **not** SSH to the
 TDX guest. Do not expose the verifier API on the LAN.
 
-## Client and live suite
+## Client and split-host TLS checks
 
 ```sh
 nix shell .#tdx-client --command tarako-tdx-client -v \
@@ -268,10 +268,12 @@ For negative tests, add separate verifier instances with the **same signing
 key**: `wrong-digest` on port 5103 with only `fsverity_digest` changed to a wrong
 value, and `wrong-ima` on port 5104 with only `ima_start_rtmr2` changed to a
 wrong value. Forward both ports on loopback like 5102. Leave the production or
-positive-test policy untouched. Then run:
+positive-test policy untouched. The check expects `tarako-tdx-client` on
+`PATH`. Run both tools from the same checkout:
 
 ```sh
-nix run .#live-tdx-smoke -- \
+nix shell .#tdx-client .#real-hardware-tls-client-check \
+  --command tarako-tdx-tls-client-check \
   --ca https-ca.pem --verifier-key verifier.pub \
   --ima-log-url http://192.0.2.10:8080/ima.log \
   --wrong-digest-verifier http://127.0.0.1:5103/verify \

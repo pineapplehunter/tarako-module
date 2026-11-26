@@ -119,8 +119,8 @@
               };
 
               checks = {
-                attestation = runAttestationTest (withModuleLockdown ./test/attestation);
-                tarako-basics = runAttestationTest (withModuleLockdown ./test/tarako-basics);
+                quote-attestation = runAttestationTest (withModuleLockdown ./test/quote-attestation);
+                basics = runAttestationTest (withModuleLockdown ./test/basics);
                 tls-attestation = runAttestationTest ./test/tls-attestation;
                 platform-evidence = pkgs.callPackage ./test/platform-evidence {
                   tdxAttestSource = ./tools/tdx-verify/tdx-attest.py;

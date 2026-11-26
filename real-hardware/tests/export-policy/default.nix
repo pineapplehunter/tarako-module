@@ -1,5 +1,5 @@
 {
-  name = "tarako-real-hardware-get-policy";
+  name = "tarako-real-hardware-export-policy";
 
   testScript = ''
     from datetime import timedelta

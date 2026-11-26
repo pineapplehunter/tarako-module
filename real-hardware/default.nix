@@ -55,18 +55,18 @@ in
           live-tdx-verifier
           live-tdx-ima-log
           live-tdx-candidate-policy
-          live-tdx-smoke
+          real-hardware-tls-client-check
           ;
         real-hardware-basics = (realHardwareTest ./tests/basics).driver;
-        real-hardware-test-driver =
+        real-hardware-tls-attestation =
           (realHardwareTest {
-            imports = [ ./tests/attestation ];
+            imports = [ ./tests/tls-attestation ];
             tarako.qcnlConfigFile = ./verifier/intel-pcs.json;
             nodes.attester.imports = testAttesterModules;
             nodes.verifier.imports = [ nixosModules.tarakoTdxVerifier ];
           }).driver;
-        real-hardware-attester-driver = singleAttesterDriver ./tests/attester-only;
-        real-hardware-get-policy = singleAttesterDriver ./tests/get-policy;
+        real-hardware-attester-only = singleAttesterDriver ./tests/attester-only;
+        real-hardware-export-policy = singleAttesterDriver ./tests/export-policy;
       };
     };
 }

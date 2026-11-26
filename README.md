@@ -84,7 +84,7 @@ nix build .#simple-attester
 # TLS server, mock-platform TLS client, and shared evidence code
 nix build .#tls-attester .#tls-client .#libtarako
 
-# NixOS VM attestation test
+# Regular checks, including the NixOS VM tests
 nix flake check
 ```
 
@@ -98,7 +98,9 @@ to that flake’s nixpkgs overlays.
 
 ### Running the test on TDX
 
-See the [real-hardware TDX runbook](real-hardware/README.md) for running the HTTP/2 attestation test on an Intel TDX host.
+Run `nix run .#real-hardware-tls-attestation` on an Intel TDX host. See the
+[real-hardware TDX runbook](real-hardware/README.md) for prerequisites and the
+other `real-hardware-*` runners.
 
 The TDX runner uses upstream QEMU from nixpkgs and source-built TDVF. The target
 host is Ubuntu 26.04 LTS with Intel TDX enabled.
