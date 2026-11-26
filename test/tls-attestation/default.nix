@@ -164,20 +164,19 @@ in
         return server_log(unit).count("HTTP request accepted")
 
 
-    def check_request(unit, hostname="localhost", rejection=None):
-        before = request_count(unit)
-        status, output = client.execute(
+    def https_get(hostname="localhost"):
+        return (
             f"timeout 20s tarako-tls-client attester:8443 {hostname} {STATE}/ca.pem "
-            f"http://verifier:5102/verify {STATE}/verifier-public.pem 2>&1"
+            f"http://verifier:5102/verify {STATE}/verifier-public.pem"
         )
-        if rejection is None:
-            assert status == 0 and output == "Tarako OK", output
-            assert request_count(unit) == before + 1, output
-        else:
-            assert request_count(unit) == before, output
-            assert 0 < status < 124, (status, output)
-            if rejection:
-                assert rejection in output, output
+
+
+    def check_rejection(unit, command, reason):
+        before = request_count(unit)
+        output = client.fail(f"{command} 2>&1")
+        print(output.rstrip(), flush=True)
+        assert reason in output, output
+        assert request_count(unit) == before, output
 
 
     for machine in (attester, client, verifier, mock):
@@ -282,28 +281,40 @@ in
     start_verifier(normal)
     start_service(attester, baseline, 8443)
     with subtest("attested HTTP/2 succeeds"):
-        check_request(baseline)
+        before = request_count(baseline)
+        body = client.succeed(https_get())
+        print(body, flush=True)
+        assert body == "Tarako OK", body
+        assert request_count(baseline) == before + 1
     with subtest("offering h2 alone cannot skip attestation"):
         before = request_count(baseline)
-        status, output = client.execute(
+        output = client.fail(
             f"timeout 20s openssl s_client -connect attester:8443 -servername localhost "
             f"-verify_hostname localhost -verify_return_error -CAfile {STATE}/ca.pem "
             "-tls1_3 -alpn h2 -ciphersuites TLS_AES_128_GCM_SHA256 </dev/null 2>&1"
         )
-        assert status == 1 and "no peer certificate available" in output, (status, output)
+        assert "no peer certificate available" in output, output
         log = server_log(baseline)
         assert "missing required attestation offer" in log, log
         assert log.count("HTTP request accepted") == before, output
     with subtest("verifier unavailable: no fallback to TLS alone"):
         verifier.succeed("systemctl stop quote-verifier.service")
         verifier.wait_until_fails("ss -Hlt 'sport = :5102' | grep -q .", timeout=timedelta(seconds=30))
-        check_request(baseline, rejection="verifier unavailable")
+        check_rejection(baseline, https_get(), "verifier unavailable")
         start_verifier(normal)
-        check_request(baseline)
+        before = request_count(baseline)
+        body = client.succeed(https_get())
+        print(body, flush=True)
+        assert body == "Tarako OK", body
+        assert request_count(baseline) == before + 1
     attester.succeed(f"systemctl stop {baseline}.service")
     with subtest("same-name certificate and key rotation"):
         start_service(attester, rotated, 8443)
-        check_request(rotated)
+        before = request_count(rotated)
+        body = client.succeed(https_get())
+        print(body, flush=True)
+        assert body == "Tarako OK", body
+        assert request_count(rotated) == before + 1
         attester.succeed(f"systemctl stop {rotated}.service")
 
     verifier.succeed("systemctl stop quote-verifier.service")
@@ -315,16 +326,17 @@ in
             unit = f"tls-attester-fault@{mode}"
             start_service(attester, unit, 8443)
             if not tls_ok:
-                hostname, rejection = "wrong.example", "TLS authentication:"
+                check_rejection(unit, https_get("wrong.example"), "TLS authentication:")
+            elif mode == "valid":
+                before = request_count(unit)
+                body = client.succeed(https_get())
+                print(body, flush=True)
+                assert body == "Tarako OK", body
+                assert request_count(unit) == before + 1
             else:
-                hostname = "localhost"
-                rejection = {
-                    "valid": None,
-                    "tarako": "verifier rejected: tarako",
-                    "platform": "verifier rejected: platform",
-                    "both": "verifier rejected: platform",  # Checked first.
-                }[mode]
-            check_request(unit, hostname, rejection)
+                # When both fail, platform evidence is checked first.
+                stage = "tarako" if mode == "tarako" else "platform"
+                check_rejection(unit, https_get(), f"verifier rejected: {stage}")
             attester.succeed(f"systemctl stop {unit}.service")
   '';
 }
