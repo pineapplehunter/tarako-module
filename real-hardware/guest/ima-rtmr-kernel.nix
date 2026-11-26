@@ -24,9 +24,5 @@
         TDX_GUEST_DRIVER = lib.mkForce yes;
       };
     }
-    {
-      name = "ima-export-extra-digests";
-      patch = ./ima-export-extra-digests.patch;
-    }
   ];
 }
