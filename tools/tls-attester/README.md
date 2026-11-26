@@ -52,7 +52,8 @@ For real quote generation and cross-machine appraisal, see the separate
 ## Build and test
 
 The `tls-attester` package contains the mock, fault-test, and live TDX servers.
-The `tls-client` package contains the mock and live TDX clients.
+The `tls-client` package contains the mock-platform test client. The separate
+[`tdx-client`](../../real-hardware/client/) package contains the live TDX client.
 `libtarako` installs the static archive, headers, and `pkg-config` metadata.
 Each tool uses CMake.
 

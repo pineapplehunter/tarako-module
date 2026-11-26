@@ -1,6 +1,7 @@
 final: prev: {
   # IntelTdxX64 TDVF.
   tdx-firmware = final.OVMF-inteltdx.fd;
+  tdx-client = final.callPackage ./client/package.nix { };
   dcap-verify = final.callPackage ./verifier/dcap/package.nix { };
   live-tdx-verifier = final.callPackage ./verifier/package.nix { };
   live-tdx-ima-log = final.writers.writePython3Bin "tarako-tdx-ima-log" { } ./guest/serve-ima.py;
@@ -17,7 +18,7 @@ final: prev: {
       "--prefix"
       "PATH"
       ":"
-      (prev.lib.makeBinPath [ final.tls-client ])
+      (prev.lib.makeBinPath [ final.tdx-client ])
     ];
   } ./tests/attestation/smoke.py;
 }

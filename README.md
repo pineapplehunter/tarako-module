@@ -81,7 +81,7 @@ nix build .#default
 # C attester (HTTP server and command-line quote generation)
 nix build .#simple-attester
 
-# TLS server, TLS client, and shared evidence code
+# TLS server, mock-platform TLS client, and shared evidence code
 nix build .#tls-attester .#tls-client .#libtarako
 
 # NixOS VM attestation test

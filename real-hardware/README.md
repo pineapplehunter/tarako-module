@@ -130,7 +130,7 @@ SSH access to the TDX host, and HTTPS access to Intel PCS.
 
    ```sh
    lab=/tmp/tarako-client.REPLACE_ME
-   nix shell .#tls-client --command tarako-tdx-client -v \
+   nix shell .#tdx-client --command tarako-tdx-client -v \
      --ca "$lab/https-ca.pem" --verifier-key "$lab/verifier.pub" \
      --verifier http://127.0.0.1:5102/verify --tls-name "$(cat "$lab/tls-name")" \
      --ima-log-url http://127.0.0.1:8080/ima.log https://127.0.0.1:8443/
@@ -236,7 +236,7 @@ TDX guest. Do not expose the verifier API on the LAN.
 ## Client and live suite
 
 ```sh
-nix shell .#tls-client --command tarako-tdx-client -v \
+nix shell .#tdx-client --command tarako-tdx-client -v \
   --ca https-ca.pem --verifier-key verifier.pub \
   --ima-log-url http://192.0.2.10:8080/ima.log \
   https://tdx-guest.test:8443/

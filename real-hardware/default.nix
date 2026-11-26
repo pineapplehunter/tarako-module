@@ -53,6 +53,7 @@ in
       packages = {
         inherit (pkgs)
           tdx-firmware
+          tdx-client
           dcap-verify
           live-tdx-verifier
           live-tdx-ima-log

@@ -2,12 +2,16 @@
 
 #include <arpa/inet.h>
 #include <curl/curl.h>
-#include <getopt.h>
 #include <nghttp2/nghttp2.h>
 #include <openssl/err.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+
+struct endpoint {
+    const char *address, *name, *authority, *path;
+    const char *ca, *verifier_key;
+};
 
 static int http2_configure_client(SSL *ssl)
 {
@@ -132,11 +136,6 @@ static int http2_get(SSL *ssl, const char *authority, const char *path)
     return fwrite(ex.body, 1, ex.body_length, stdout) == ex.body_length && fflush(stdout) == 0;
 }
 
-struct endpoint {
-    const char *address, *name, *authority, *path;
-    const char *ca, *verifier_key;
-};
-
 static int set_host(SSL *ssl, const char *host)
 {
     char unbracketed[INET6_ADDRSTRLEN];
@@ -161,16 +160,15 @@ static int valid_target(const char *s)
     return 1;
 }
 
-static int fetch(const struct endpoint *ep, struct verifier *verifier)
+static int client_fetch(const struct endpoint *ep, struct verifier *verifier)
 {
     if (!*ep->name || !valid_target(ep->name) || !valid_target(ep->authority) ||
         ep->path[0] != '/' || !valid_target(ep->path)) {
         fputs("invalid HTTPS request target\n", stderr);
         return 0;
     }
-    int tdx = verifier->ima_url != NULL;
     const struct attestation_callbacks callbacks = {
-        .appraise = appraise_evidence, .arg = verifier, .tdx = tdx,
+        .appraise = appraise_evidence, .arg = verifier, .tdx = 0,
     };
     BIO *pem = BIO_new_file(ep->verifier_key, "r");
     if (pem)
@@ -182,22 +180,18 @@ static int fetch(const struct endpoint *ep, struct verifier *verifier)
     int ok = 0;
     if (!ctx || !verifier->public_key || !EVP_PKEY_is_a(verifier->public_key, "EC") ||
         !early_tls_configure(ctx, 0) ||
-        !(ep->ca ? SSL_CTX_load_verify_locations(ctx, ep->ca, NULL) : SSL_CTX_set_default_verify_paths(ctx)))
+        !SSL_CTX_load_verify_locations(ctx, ep->ca, NULL))
         goto done;
     ssl = SSL_new(ctx);
     socket = BIO_new_connect(ep->address);
     if (!ssl || !socket || !set_host(ssl, ep->name) || !early_tls_attach(ssl, &callbacks) ||
         !http2_configure_client(ssl) ||
-        BIO_do_connect(socket) != 1 || !early_tls_socket_timeout(socket, tdx ? 30 : 10))
+        BIO_do_connect(socket) != 1 || !early_tls_socket_timeout(socket, 10))
         goto done;
     SSL_set_bio(ssl, socket, socket);
     socket = NULL;
-    if (verifier->verbose)
-        fprintf(stderr, "* Connecting to %s with required TDX attestation\n", ep->address);
     if (SSL_connect(ssl) != 1)
         goto done;
-    if (verifier->verbose)
-        fputs("* TLS handshake passed; requesting resource over HTTP/2\n", stderr);
     ok = http2_get(ssl, ep->authority, ep->path);
     SSL_shutdown(ssl);
 done:
@@ -208,71 +202,6 @@ done:
     return ok;
 }
 
-#ifdef TARAKO_TDX
-static int run(int argc, char **argv)
-{
-    static const struct option opts[] = {
-        {"ca", required_argument, NULL, 'c'},
-        {"verifier", required_argument, NULL, 'V'},
-        {"verifier-key", required_argument, NULL, 'k'},
-        {"ima-log-url", required_argument, NULL, 'i'},
-        {"tls-name", required_argument, NULL, 'n'},
-        {"verbose", no_argument, NULL, 'v'},
-        {0}
-    };
-    struct endpoint ep = {0};
-    struct verifier verifier = {.url = "http://127.0.0.1:5102/verify"};
-    int opt;
-    while ((opt = getopt_long(argc, argv, "v", opts, NULL)) != -1) {
-        switch (opt) {
-        case 'c': ep.ca = optarg; break;
-        case 'k': ep.verifier_key = optarg; break;
-        case 'V': verifier.url = optarg; break;
-        case 'i': verifier.ima_url = optarg; break;
-        case 'n': ep.name = optarg; break;
-        case 'v': verifier.verbose = 1; break;
-        default: return 0;
-        }
-    }
-    if (argc - optind != 1 || !ep.verifier_key || !verifier.ima_url) {
-        fprintf(stderr, "usage: %s [-v] [--ca CA.pem] [--verifier URL] [--tls-name NAME] "
-                        "--verifier-key KEY.pem --ima-log-url URL https://host[:port]/\n", argv[0]);
-        return 0;
-    }
-    CURLU *url = curl_url();
-    char *scheme = NULL, *host = NULL, *port = NULL, *path = NULL, *query = NULL;
-    char address[320], target[4096];
-    int ok = 0;
-    if (!url || curl_url_set(url, CURLUPART_URL, argv[optind], CURLU_DISALLOW_USER) ||
-        curl_url_get(url, CURLUPART_SCHEME, &scheme, 0) || strcmp(scheme, "https") ||
-        curl_url_get(url, CURLUPART_HOST, &host, 0) ||
-        curl_url_get(url, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) ||
-        curl_url_get(url, CURLUPART_PATH, &path, 0)) {
-        fputs("expected an HTTPS URL without user information\n", stderr);
-        goto done;
-    }
-    CURLUcode query_status = curl_url_get(url, CURLUPART_QUERY, &query, 0);
-    int n = snprintf(address, sizeof(address), "%s:%s", host, port);
-    int m = snprintf(target, sizeof(target), "%s%s%s", path, query ? "?" : "", query ? query : "");
-    if ((query_status != CURLUE_OK && query_status != CURLUE_NO_QUERY) ||
-        n <= 0 || (size_t)n >= sizeof(address) || m <= 0 || (size_t)m >= sizeof(target)) {
-        fputs("invalid HTTPS request target\n", stderr);
-        goto done;
-    }
-    ep.address = ep.authority = address;
-    ep.name = ep.name ? ep.name : host;
-    ep.path = target;
-    ok = fetch(&ep, &verifier);
-done:
-    curl_free(query);
-    curl_free(path);
-    curl_free(port);
-    curl_free(host);
-    curl_free(scheme);
-    curl_url_cleanup(url);
-    return ok;
-}
-#else
 static int run(int argc, char **argv)
 {
     if (argc != 6) {
@@ -284,9 +213,8 @@ static int run(int argc, char **argv)
         .path = "/", .ca = argv[3], .verifier_key = argv[5],
     };
     struct verifier verifier = {.url = argv[4]};
-    return fetch(&ep, &verifier);
+    return client_fetch(&ep, &verifier);
 }
-#endif
 
 int main(int argc, char **argv)
 {
