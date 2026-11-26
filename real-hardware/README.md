@@ -268,11 +268,12 @@ For negative tests, add separate verifier instances with the **same signing
 key**: `wrong-digest` on port 5103 with only `fsverity_digest` changed to a wrong
 value, and `wrong-ima` on port 5104 with only `ima_start_rtmr2` changed to a
 wrong value. Forward both ports on loopback like 5102. Leave the production or
-positive-test policy untouched. The check expects `tarako-tdx-client` on
-`PATH`. Run both tools from the same checkout:
+positive-test policy untouched. Run the check on the client machine, which
+does not need TDX hardware. The check expects `tarako-tdx-client` on `PATH`;
+use both tools from the same checkout:
 
 ```sh
-nix shell .#tdx-client .#real-hardware-tls-client-check \
+nix shell .#tdx-client .#tdx-tls-client-check \
   --command tarako-tdx-tls-client-check \
   --ca https-ca.pem --verifier-key verifier.pub \
   --ima-log-url http://192.0.2.10:8080/ima.log \

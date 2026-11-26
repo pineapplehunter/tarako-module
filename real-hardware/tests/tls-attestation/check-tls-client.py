@@ -1,4 +1,4 @@
-"""Check HTTPS success and expected rejections against running TDX attestation services."""
+"""Check HTTPS success and rejection against running TDX services."""
 import argparse
 import subprocess
 import sys

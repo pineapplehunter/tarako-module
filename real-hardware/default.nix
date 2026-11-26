@@ -55,7 +55,7 @@ in
           live-tdx-verifier
           live-tdx-ima-log
           live-tdx-candidate-policy
-          real-hardware-tls-client-check
+          tdx-tls-client-check
           ;
         real-hardware-basics = (realHardwareTest ./tests/basics).driver;
         real-hardware-tls-attestation =

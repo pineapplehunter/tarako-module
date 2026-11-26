@@ -13,7 +13,7 @@ final: prev: {
       (prev.lib.makeBinPath [ final.fsverity-utils ])
     ];
   } ./guest/candidate-policy.py;
-  real-hardware-tls-client-check =
+  tdx-tls-client-check =
     final.writers.writePython3Bin "tarako-tdx-tls-client-check" { }
       ./tests/tls-attestation/check-tls-client.py;
 }
