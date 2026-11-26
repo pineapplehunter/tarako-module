@@ -68,7 +68,7 @@
               (config.boot.kernelPackages.callPackage ./driver/package.nix { })
             ];
           };
-          tarakoTestModuleLockdown = import ./test/common/module-lockdown.nix;
+          tarakoTestModuleLockdown = import ./modules/module-lockdown.nix;
         };
 
         perSystem =
