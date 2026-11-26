@@ -18,7 +18,6 @@
     import hashlib
 
     start_all()
-    attester.wait_for_unit("multi-user.target", timeout=timedelta(minutes=2))
 
     with subtest("TARAKO key is committed to TDX RTMR2"):
         # The synchronous sink exports the baseline before the boot aggregate.

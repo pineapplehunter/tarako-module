@@ -48,48 +48,51 @@ in
       import os
       from shlex import quote
 
-      start_all()
       state = "${state}"
       timeout = timedelta(seconds=30)
-      for machine in (attester, verifier):
-          machine.wait_for_unit("multi-user.target", timeout=timedelta(minutes=2))
 
-      # Trust the image we just booted for this isolated test only. This does
-      # not enroll the guest for use by an external verifier.
-      attester.succeed("systemctl start tarako-tdx-prepare-attester.service")
-      policy = json.loads(attester.succeed("tarako-tdx-candidate-policy ${measured}/attester"))
+      start_all()
+
+      with subtest("measure the attester and collect this run's candidate policy"):
+          # Trust the image we just booted for this isolated test only. This does
+          # not enroll the guest for use by an external verifier.
+          attester.succeed("systemctl start tarako-tdx-prepare-attester.service")
+          policy = json.loads(attester.succeed("tarako-tdx-candidate-policy ${measured}/attester"))
 
       def put(machine, destination, contents):
           machine.succeed(f"printf %s {quote(contents)} > {quote(destination)}")
 
-      verifier.succeed(f"install -d -m 0700 {state}")
-      qc_config = os.environ.get("TARAKO_TDX_QCNL_CONFIG", "${config.tarako.qcnlConfigFile}")
-      verifier.copy_from_host(qc_config, f"{state}/qcnl.json")
-      verifier.succeed(f"""
-          set -e
-          cd {state}
-          umask 077
-          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out verifier.key
-          openssl pkey -in verifier.key -pubout -out verifier.pub
-      """)
+      with subtest("configure Intel collateral access and generate the verifier signing key"):
+          verifier.succeed(f"install -d -m 0700 {state}")
+          qc_config = os.environ.get("TARAKO_TDX_QCNL_CONFIG", "${config.tarako.qcnlConfigFile}")
+          verifier.copy_from_host(qc_config, f"{state}/qcnl.json")
+          verifier.succeed(f"""
+              set -e
+              cd {state}
+              umask 077
+              openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out verifier.key
+              openssl pkey -in verifier.key -pubout -out verifier.pub
+          """)
 
       def flipped(field):
           original = policy[field]
           return {**policy, field: ("0" if original[0] != "0" else "1") + original[1:]}
 
-      for name, port, value in (
-          ("live", 5102, policy),
-          ("wrong-digest", 5103, flipped("fsverity_digest")),
-          ("wrong-ima", 5104, flipped("ima_start_rtmr2")),
-      ):
-          put(verifier, f"{state}/{name}.json", json.dumps(value))
-          verifier.succeed(f"systemctl start tarako-tdx-verifier-{name}.service")
-          verifier.wait_for_open_port(port, timeout=timeout)
+      with subtest("provision the policies and start the three verifier instances"):
+          for name, port, value in (
+              ("live", 5102, policy),
+              ("wrong-digest", 5103, flipped("fsverity_digest")),
+              ("wrong-ima", 5104, flipped("ima_start_rtmr2")),
+          ):
+              put(verifier, f"{state}/{name}.json", json.dumps(value))
+              verifier.succeed(f"systemctl start tarako-tdx-verifier-{name}.service")
+              verifier.wait_for_open_port(port, timeout=timeout)
 
-      attester.succeed("systemctl start tarako-tdx-attester.service tarako-tdx-ima-log.service")
-      attester.wait_for_open_port(8443, timeout=timeout)
-      attester.wait_for_open_port(8080, timeout=timeout)
-      put(verifier, f"{state}/ca.pem", attester.succeed(f"cat {state}/ca.pem"))
+      with subtest("start HTTPS and the IMA log service and copy the HTTPS CA"):
+          attester.succeed("systemctl start tarako-tdx-attester.service tarako-tdx-ima-log.service")
+          attester.wait_for_open_port(8443, timeout=timeout)
+          attester.wait_for_open_port(8080, timeout=timeout)
+          put(verifier, f"{state}/ca.pem", attester.succeed(f"cat {state}/ca.pem"))
 
       def https_get(port=5102, options=""):
           return (

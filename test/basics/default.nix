@@ -25,12 +25,11 @@
     import hashlib
     import json
 
-    start_all()
-    attester.wait_for_unit("multi-user.target")
-
     IMA_LOG = "/sys/kernel/security/integrity/ima/ascii_runtime_measurements"
     PUBKEY_EVENT = "public-key-generate"
     SPKI_P256_PREFIX_HEX = "3039301306072a8648ce3d020106082a8648ce3d030107032200"
+
+    start_all()
 
     with subtest("module loading locked in initramfs, even for root"):
         assert attester.succeed("id -u").strip() == "0"
@@ -53,7 +52,7 @@
         attester.fail("sysctl -w kernel.modules_disabled=0")
         assert attester.succeed("sysctl -n kernel.modules_disabled").strip() == "1"
 
-    with subtest("TARAKO signs only fs-verity-protected executables"):
+    with subtest("prepare the fs-verity filesystem and copy the attester"):
         attester.succeed(
             "mkdir -p /mnt/verity; truncate -s 128M /tmp/verity.img; "
             "mkfs.ext4 -q -F -O verity /tmp/verity.img && "
@@ -61,6 +60,8 @@
         )
         app = "/mnt/verity/attester"
         attester.succeed(f"install -m755 $(command -v tarako-simple-attester) {app}")
+
+    with subtest("TARAKO signs only fs-verity-protected executables"):
         nonce = "ab" * 32
         command = f"{app} quote {nonce}"
         assert "TARAKO_SIGN_DATA" in attester.fail(command + " 2>&1")
@@ -104,7 +105,6 @@
         first_pubkey = read_measured_pubkey()
         attester.shutdown()
         attester.start()
-        attester.wait_for_unit("multi-user.target")
         pubkey = read_measured_pubkey()
         assert pubkey != first_pubkey, "public key was reused across boots"
         attester.succeed(
